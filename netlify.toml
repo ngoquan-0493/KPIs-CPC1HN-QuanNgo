@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Next.js Runtime cua Netlify (plugin @netlify/plugin-nextjs) tu dong duoc
+# ap dung khi Netlify phat hien day la du an Next.js - khong can khai bao
+# them plugin thu cong o day.

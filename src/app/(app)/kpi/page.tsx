@@ -1,0 +1,857 @@
+import { createClient } from "@/lib/supabase/server";
+import MoMoiSpttDetail from "@/components/mo-moi-sptt-detail";
+import CodeMoiDetail from "@/components/code-moi-detail";
+import MonthSelector from "@/components/month-selector";
+import SsFilter from "@/components/ss-filter";
+import { formatVnd, isExcludedSaleRow, fetchAllRows } from "@/lib/sales-channel";
+import { ghepTenMa } from "@/lib/display";
+import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
+import { IconClock, IconUsers } from "@/components/icons";
+
+type KpiRow = {
+  "Mã Nhân viên": string;
+  "Tên Nhân viên": string | null;
+  "Chỉ tiêu": string | null;
+  "Chi tiết Kế hoạch/sản phẩm": string | null;
+  "Mã khách": string | null;
+  "Số lượng khách hàng kế hoạch": number | null;
+  "Sản lượng kế hoạch tối thiểu": number | null;
+  "Số lượng thực hiện": number | null;
+  "Tỉ trọng thực hiện/kế hoạch": number | null;
+  "Điểm KPIs": number | null;
+  "Điểm KPIs kế hoạch": number | null;
+  "Số lượng tối thiểu cần đạt": number | null;
+  "Kết quả": string | null;
+  "Tháng đánh giá": string;
+};
+
+type EmployeeRow = {
+  "Mã nhân viên": string;
+  "Tên nhân viên": string | null;
+  "Vị trí": string | null;
+  SS: string | null;
+};
+
+type ChamCongRow = {
+  ma_nhan_vien: string | null;
+  ma_khach: string | null;
+};
+
+type PhanLoaiRow = {
+  thang_danh_gia: string | null;
+  ma_nhan_vien: string | null;
+  ma_khach: string | null;
+  ten_khach: string | null;
+  ten_san_pham: string | null;
+  don_gan_nhat: string | null;
+  muc_do_canh_bao: string | null;
+};
+
+type VisitRow = {
+  ma_nhan_vien: string | null;
+  ma_khach: string | null;
+  thoi_gian_checkin: string | null;
+};
+
+type RevenueRow = {
+  ma_nhan_vien: string | null;
+  doanh_thu: number | null;
+  nhom_khach_hang: string | null;
+  trang_thai?: string | null;
+  ma_khach: string | null;
+  ten_san_pham_chuan_hoa: string | null;
+};
+
+// thang_danh_gia in phan_loai_khach_hang_can_lap_don is text like "T6/2026";
+// parse to a sortable number so the newest analysis month can be picked.
+function parseThangDanhGia(v: string | null) {
+  const m = /^T(\d{1,2})\/(\d{4})$/.exec((v ?? "").trim());
+  if (!m) return 0;
+  return Number(m[2]) * 12 + Number(m[1]);
+}
+
+const CANH_BAO_ORDER: Record<string, number> = { "Khẩn": 0, "Ưu tiên": 1, "Mồ côi": 2 };
+
+const CHI_TIEU_ORDER: Record<string, number> = {
+  "Code mới": 0,
+  "Mở mới SPTT": 1,
+  "Mở mới": 2,
+  "Duy trì SPTT": 3,
+  "Duy trì": 4,
+  "Doanh số kê đơn - phòng mạch": 5,
+  "Doanh số thầu": 6,
+};
+
+function canhBaoBadge(mucDo: string | null) {
+  if (mucDo === "Khẩn") return "bg-red-100 text-red-700";
+  if (mucDo === "Ưu tiên") return "bg-amber-100 text-amber-700";
+  return "bg-slate-200 text-slate-600";
+}
+
+function ketQuaThucHienBadge(kq: string) {
+  if (kq === "Đã lặp đơn") return "bg-emerald-100 text-emerald-700";
+  if (kq.startsWith("Đã viếng thăm")) return "bg-amber-100 text-amber-700";
+  return "bg-red-100 text-red-700";
+}
+
+function resultColor(ketQua: string | null) {
+  if (!ketQua) return "bg-slate-100 text-slate-700";
+  const k = ketQua.toLowerCase();
+  if (k.includes("đạt") && !k.includes("không")) return "bg-emerald-100 text-emerald-700";
+  if (k.includes("không đạt")) return "bg-red-100 text-red-700";
+  return "bg-amber-100 text-amber-700";
+}
+
+// Employee codes are entered inconsistently across tables (zero-padded vs not),
+// so normalize to digits-only before matching KPI rows to employees.
+function normCode(code: string | null | undefined) {
+  return (code ?? "").replace(/\D/g, "").replace(/^0+/, "") || code || "";
+}
+
+const DOANH_SO_CHI_TIEU = ["Doanh số kê đơn - phòng mạch", "Doanh số thầu"];
+
+function isDoanhSoChiTieu(chiTieu: string | null) {
+  return DOANH_SO_CHI_TIEU.includes(chiTieu ?? "");
+}
+
+// "Kế hoạch" hiển thị khác nhau tuỳ chỉ tiêu: Code mới/Mở mới SPTT tính theo
+// số khách hàng kế hoạch, Duy trì SPTT tính theo sản lượng kế hoạch tối thiểu,
+// Doanh số kê đơn - phòng mạch/Doanh số thầu đọc số tiền kế hoạch từ cột
+// "Chi tiết Kế hoạch/sản phẩm" (nhập trực tiếp dạng số, vd "210000000").
+function planValue(k: KpiRow) {
+  if (isDoanhSoChiTieu(k["Chỉ tiêu"])) {
+    const n = Number(k["Chi tiết Kế hoạch/sản phẩm"]);
+    return Number.isFinite(n) ? n : null;
+  }
+  if (k["Chỉ tiêu"] === "Duy trì SPTT" || k["Chỉ tiêu"] === "Duy trì") {
+    return k["Sản lượng kế hoạch tối thiểu"];
+  }
+  return k["Số lượng khách hàng kế hoạch"];
+}
+
+function isDat(ketQua: string | null) {
+  const k = (ketQua ?? "").toLowerCase();
+  return k.includes("đạt") && !k.includes("không");
+}
+
+// Tổng kết chung cho "Code mới" và "Mở mới SPTT" — không có khái niệm ngưỡng
+// nhóm như Duy trì SPTT, chỉ cộng dồn số dòng đạt và điểm thực tế/kế hoạch.
+function chiTieuSummary(kpis: KpiRow[], chiTieu: string) {
+  const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
+  if (rows.length === 0) return null;
+
+  const tongSoChiTieu = rows.length;
+  const soDat = rows.filter((r) => isDat(r["Kết quả"])).length;
+  const tongDiemKeHoach = rows.reduce((s, r) => s + (r["Điểm KPIs kế hoạch"] ?? 0), 0);
+  const tongDiemThucTe = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
+
+  return { tongSoChiTieu, soDat, tongDiemKeHoach, tongDiemThucTe };
+}
+
+// Tổng kết cho 2 chỉ tiêu doanh số (Doanh số kê đơn - phòng mạch / Doanh số
+// thầu) — kế hoạch đọc từ "Chi tiết Kế hoạch/sản phẩm" (nhập số tiền trực
+// tiếp), thực hiện/điểm lấy từ "Số lượng thực hiện"/"Điểm KPIs" đã tính.
+function doanhSoSummary(kpis: KpiRow[], chiTieu: string) {
+  const row = kpis.find((k) => k["Chỉ tiêu"] === chiTieu);
+  if (!row) return null;
+
+  const keHoach = Number(row["Chi tiết Kế hoạch/sản phẩm"]) || 0;
+  const thucHien = row["Số lượng thực hiện"] ?? 0;
+  const diemKeHoach = row["Điểm KPIs kế hoạch"] ?? 0;
+  const diemThucTe = row["Điểm KPIs"] ?? 0;
+
+  return { keHoach, thucHien, diemKeHoach, diemThucTe, dat: isDat(row["Kết quả"]) };
+}
+
+// "Duy trì SPTT" / "Duy trì" / "Mở mới" đều chỉ cần đạt đủ ngưỡng tối thiểu
+// trong tổng số chỉ tiêu được giao (ví dụ 3/5) để được ghi nhận hoàn thành
+// 100% điểm của cả nhóm, thay vì cộng dồn tỉ lệ từng dòng. Ngưỡng và điểm kế
+// hoạch tối đa của mỗi dòng đến từ Google Sheet và không bị ghi đè bởi tác vụ
+// tính KPI hàng ngày. Dùng chung 1 hàm cho cả 3 chỉ tiêu vì cùng cấu trúc
+// ngưỡng nhóm ("Số lượng tối thiểu cần đạt"). Riêng "Code mới" và "Mở mới
+// SPTT" không dùng ngưỡng nhóm nên vẫn tính bằng chiTieuSummary.
+function nguongNhomSummary(
+  kpis: KpiRow[],
+  chiTieu: "Duy trì SPTT" | "Duy trì" | "Mở mới",
+) {
+  const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
+  if (rows.length === 0) return null;
+
+  const tongSoChiTieu = rows.length;
+  const soDat = rows.filter((r) => isDat(r["Kết quả"])).length;
+  const nguong = rows.find((r) => r["Số lượng tối thiểu cần đạt"] != null)?.[
+    "Số lượng tối thiểu cần đạt"
+  ] ?? null;
+  const tongDiemKeHoach = rows.reduce((s, r) => s + (r["Điểm KPIs kế hoạch"] ?? 0), 0);
+  const tongDiemThucTe = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
+  const hoanThanh = nguong != null && soDat >= nguong;
+
+  return {
+    tongSoChiTieu,
+    soDat,
+    nguong,
+    hoanThanh,
+    diemTong: hoanThanh ? tongDiemKeHoach : tongDiemThucTe,
+    tongDiemKeHoach,
+  };
+}
+
+export default async function KpiPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ thang?: string; ss?: string }>;
+}) {
+  const supabase = await createClient();
+  const { thang, ss: selectedSs } = await searchParams;
+
+  const monthsRes = await supabase
+    .from("Chi tieu KPIs")
+    .select('"Tháng đánh giá":thang_danh_gia')
+    .order("thang_danh_gia", { ascending: false });
+
+  const months = Array.from(
+    new Set((monthsRes.data ?? []).map((r) => r["Tháng đánh giá"] as string)),
+  ).sort((a, b) => (a < b ? 1 : -1));
+
+  const selectedMonth = thang && months.includes(thang) ? thang : months[0];
+  const [namDanhGia, thangDanhGia] = (selectedMonth ?? "")
+    .split("-")
+    .map(Number);
+
+  // Chấm công phải đúng tháng đang xem (không phải "tháng hiện tại" theo
+  // đồng hồ thật) — dữ liệu 1 tháng có thể nằm ở "Du lieu cham cong 3 thang"
+  // (đã lưu trữ) hoặc "Du lieu cham cong thang hien tai" (đang chạy), nên lọc
+  // theo khoảng ngày và gộp cả 2 bảng, giống cách xử lý doanh số.
+  const dauThang = `${namDanhGia}-${String(thangDanhGia).padStart(2, "0")}-01`;
+  const [namThangSau, thangThangSau] =
+    thangDanhGia === 12 ? [namDanhGia + 1, 1] : [namDanhGia, thangDanhGia + 1];
+  const dauThangSau = `${namThangSau}-${String(thangThangSau).padStart(2, "0")}-01`;
+
+  const chamCongThangPromise = Promise.all([
+    fetchAllRows<ChamCongRow>((from, to) =>
+      supabase
+        .from("Du lieu cham cong 3 thang")
+        .select("ma_nhan_vien,ma_khach")
+        .gte("thoi_gian_checkin", dauThang)
+        .lt("thoi_gian_checkin", dauThangSau)
+        .range(from, to),
+    ),
+    fetchAllRows<ChamCongRow>((from, to) =>
+      supabase
+        .from("Du lieu cham cong thang hien tai")
+        .select("ma_nhan_vien,ma_khach")
+        .gte("thoi_gian_checkin", dauThang)
+        .lt("thoi_gian_checkin", dauThangSau)
+        .range(from, to),
+    ),
+  ]).then(([a, b]) => ({
+    data: [...a.data, ...b.data],
+    error: a.error ?? b.error,
+  }));
+
+  const [kpiRes, empRes, chamCongRes, phanLoaiRes, revenueTongRes, revenueHienTaiRes] =
+    await Promise.all([
+    supabase
+      .from("Chi tieu KPIs")
+      .select(
+        '"Mã Nhân viên":ma_nhan_vien,"Tên Nhân viên":ten_nhan_vien,"Chỉ tiêu":chi_tieu,"Chi tiết Kế hoạch/sản phẩm":chi_tiet_ke_hoach_san_pham,"Mã khách":ma_khach,"Số lượng khách hàng kế hoạch":so_luong_khach_hang_ke_hoach,"Sản lượng kế hoạch tối thiểu":san_luong_ke_hoach_toi_thieu,"Số lượng thực hiện":so_luong_thuc_hien,"Tỉ trọng thực hiện/kế hoạch":ti_trong_thuc_hien_ke_hoach,"Điểm KPIs":diem_kpis,"Điểm KPIs kế hoạch":diem_kpis_ke_hoach,"Số lượng tối thiểu cần đạt":so_luong_toi_thieu_can_dat,"Kết quả":ket_qua,"Tháng đánh giá":thang_danh_gia',
+      )
+      .eq("thang_danh_gia", selectedMonth ?? ""),
+    supabase
+      .from("Danh sach nhan vien")
+      .select('"Mã nhân viên":ma_nhan_vien,"Tên nhân viên":ten_nhan_vien,"Vị trí":vi_tri,SS:ss')
+      .neq("vi_tri", "ASM")
+      .order("ten_nhan_vien", { ascending: true }),
+    chamCongThangPromise,
+    supabase
+      .from("phan_loai_khach_hang_can_lap_don")
+      .select(
+        "thang_danh_gia,ma_nhan_vien,ma_khach,ten_khach,ten_san_pham,don_gan_nhat,muc_do_canh_bao",
+      )
+      .limit(5000),
+    fetchAllRows<RevenueRow>((from, to) =>
+      supabase
+        .from("Du lieu sale tong")
+        .select("ma_nhan_vien,doanh_thu,nhom_khach_hang,ma_khach,ten_san_pham_chuan_hoa")
+        .eq("nam", namDanhGia ?? 0)
+        .eq("thang", thangDanhGia ?? 0)
+        .range(from, to),
+    ),
+    fetchAllRows<RevenueRow>((from, to) =>
+      supabase
+        .from("Du lieu sale thang hien tai")
+        .select(
+          "ma_nhan_vien,doanh_thu,nhom_khach_hang,trang_thai,ma_khach,ten_san_pham_chuan_hoa",
+        )
+        .eq("nam", namDanhGia ?? 0)
+        .eq("thang", thangDanhGia ?? 0)
+        .range(from, to),
+    ),
+  ]);
+
+  // Cặp (NV, mã khách, sản phẩm) đã phát sinh đơn hàng thực tế trong tháng
+  // đang xem — dùng để biết khách "cần tập trung" nào đã được lặp đơn. Doanh
+  // số theo kênh (kê đơn - phòng mạch / thầu) đã chuyển sang đọc trực tiếp từ
+  // "Chi tieu KPIs" (doanhSoSummary) nên không cần tự tổng hợp lại ở đây nữa.
+  const daLapDonSet = new Set<string>();
+  for (const r of [
+    ...((revenueTongRes.data ?? []) as RevenueRow[]),
+    ...((revenueHienTaiRes.data ?? []) as RevenueRow[]),
+  ]) {
+    if (isExcludedSaleRow(r)) continue;
+    const key = normCode(r.ma_nhan_vien);
+    if (!key) continue;
+
+    const maKhach = (r.ma_khach ?? "").trim().toUpperCase();
+    const sanPham = (r.ten_san_pham_chuan_hoa ?? "").trim().toLowerCase();
+    if (maKhach && sanPham) daLapDonSet.add(`${key}|${maKhach}|${sanPham}`);
+  }
+
+  // Số lần viếng thăm (check-in) của từng cặp (NV, mã khách) trong tháng
+  // đang xem — dùng chung dữ liệu chấm công đã lọc đúng tháng ở trên.
+  const visitCountThisMonth = new Map<string, number>();
+  for (const r of (chamCongRes.data ?? []) as ChamCongRow[]) {
+    const key = normCode(r.ma_nhan_vien);
+    const maKhach = (r.ma_khach ?? "").trim().toUpperCase();
+    if (!key || !maKhach) continue;
+    const mapKey = `${key}|${maKhach}`;
+    visitCountThisMonth.set(mapKey, (visitCountThisMonth.get(mapKey) ?? 0) + 1);
+  }
+
+  // Chỉ giữ kỳ phân tích mới nhất của danh sách Khẩn/Ưu tiên/Mồ côi.
+  const allPhanLoai = (phanLoaiRes.data ?? []) as PhanLoaiRow[];
+  const latestKy = Math.max(0, ...allPhanLoai.map((r) => parseThangDanhGia(r.thang_danh_gia)));
+  const phanLoaiRows = allPhanLoai.filter(
+    (r) => parseThangDanhGia(r.thang_danh_gia) === latestKy,
+  );
+
+  // Lần viếng thăm gần nhất của từng NV tại từng khách trong danh sách cần
+  // tập trung — gộp bảng chấm công 3 tháng và tháng hiện tại.
+  const focusCustomerCodes = Array.from(
+    new Set(
+      phanLoaiRows
+        .map((r) => (r.ma_khach ?? "").trim().toUpperCase())
+        .filter(Boolean),
+    ),
+  );
+  const [visit3ThangRes, visitHienTaiRes] = await Promise.all([
+    fetchAllRows<VisitRow>((from, to) =>
+      supabase
+        .from("Du lieu cham cong 3 thang")
+        .select("ma_nhan_vien,ma_khach,thoi_gian_checkin")
+        .in("ma_khach", focusCustomerCodes)
+        .range(from, to),
+    ),
+    fetchAllRows<VisitRow>((from, to) =>
+      supabase
+        .from("Du lieu cham cong thang hien tai")
+        .select("ma_nhan_vien,ma_khach,thoi_gian_checkin")
+        .in("ma_khach", focusCustomerCodes)
+        .range(from, to),
+    ),
+  ]);
+
+  const lastVisitByKey = new Map<string, string>();
+  for (const r of [
+    ...((visit3ThangRes.data ?? []) as VisitRow[]),
+    ...((visitHienTaiRes.data ?? []) as VisitRow[]),
+  ]) {
+    if (!r.thoi_gian_checkin) continue;
+    const key = `${normCode(r.ma_nhan_vien)}|${(r.ma_khach ?? "").trim().toUpperCase()}`;
+    const cur = lastVisitByKey.get(key);
+    if (!cur || r.thoi_gian_checkin > cur) lastVisitByKey.set(key, r.thoi_gian_checkin);
+  }
+
+  const phanLoaiByCode = new Map<string, PhanLoaiRow[]>();
+  for (const r of phanLoaiRows) {
+    const key = normCode(r.ma_nhan_vien);
+    if (!key) continue;
+    if (!phanLoaiByCode.has(key)) phanLoaiByCode.set(key, []);
+    phanLoaiByCode.get(key)!.push(r);
+  }
+  for (const rows of phanLoaiByCode.values()) {
+    rows.sort(
+      (a, b) =>
+        (CANH_BAO_ORDER[a.muc_do_canh_bao ?? ""] ?? 9) -
+        (CANH_BAO_ORDER[b.muc_do_canh_bao ?? ""] ?? 9),
+    );
+  }
+
+  const kpiRows = (kpiRes.data ?? []) as KpiRow[];
+  const employees = (empRes.data ?? []) as EmployeeRow[];
+
+  // "Chi tieu KPIs" chi co ma_khach, khong co ten_khach - tra rieng tu
+  // khach_hang_master de hien cap Ten (Ma) trong bang chi tieu, thay vi chi
+  // hien mot chuoi ma kho tra cuu.
+  const kpiMaKhachList = Array.from(
+    new Set(kpiRows.map((k) => (k["Mã khách"] ?? "").trim()).filter(Boolean)),
+  );
+  const tenKhachByMa = new Map<string, string>();
+  if (kpiMaKhachList.length > 0) {
+    const { data: khachMasterData } = await supabase
+      .from("khach_hang_master")
+      .select("ma_khach,ten_khach")
+      .in("ma_khach", kpiMaKhachList);
+    for (const k of (khachMasterData ?? []) as { ma_khach: string; ten_khach: string | null }[]) {
+      if (k.ten_khach) tenKhachByMa.set(k.ma_khach, k.ten_khach);
+    }
+  }
+
+  const error =
+    kpiRes.error ??
+    empRes.error ??
+    chamCongRes.error ??
+    phanLoaiRes.error ??
+    revenueTongRes.error ??
+    revenueHienTaiRes.error;
+
+  // Hoạt động thị trường trong tháng đang xem (selectedMonth, không phải
+  // tháng hiện tại theo đồng hồ) theo NV: số call (lượt chấm công) và số
+  // khách hàng đã viếng thăm (đếm mã khách duy nhất). Loại trừ check-in tại
+  // Văn phòng (mã khách bắt đầu bằng "VP") — không phải hoạt động thị trường.
+  const chamCongByCode = new Map<string, { calls: number; khach: Set<string> }>();
+  for (const r of (chamCongRes.data ?? []) as ChamCongRow[]) {
+    const maKhach = (r.ma_khach ?? "").trim();
+    if (maKhach.toUpperCase().startsWith("VP")) continue;
+    const key = normCode(r.ma_nhan_vien);
+    if (!key) continue;
+    const cur = chamCongByCode.get(key) ?? { calls: 0, khach: new Set<string>() };
+    cur.calls += 1;
+    if (maKhach) cur.khach.add(maKhach);
+    chamCongByCode.set(key, cur);
+  }
+
+  const kpiByCode = new Map<string, KpiRow[]>();
+  for (const r of kpiRows) {
+    const key = normCode(r["Mã Nhân viên"]);
+    if (!kpiByCode.has(key)) kpiByCode.set(key, []);
+    kpiByCode.get(key)!.push(r);
+  }
+  for (const rows of kpiByCode.values()) {
+    rows.sort(
+      (a, b) =>
+        (CHI_TIEU_ORDER[a["Chỉ tiêu"] ?? ""] ?? 9) -
+        (CHI_TIEU_ORDER[b["Chỉ tiêu"] ?? ""] ?? 9),
+    );
+  }
+
+  const ssList = Array.from(new Set(employees.map((e) => e.SS).filter((v): v is string => !!v))).sort(
+    (a, b) => a.localeCompare(b),
+  );
+  const scopedEmployees = selectedSs ? employees.filter((e) => e.SS === selectedSs) : employees;
+
+  const groups = scopedEmployees.map((e) => ({
+    code: normCode(e["Mã nhân viên"]),
+    name: e["Tên nhân viên"] ?? e["Mã nhân viên"],
+    kpis: kpiByCode.get(normCode(e["Mã nhân viên"])) ?? [],
+    soCall: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.calls ?? 0,
+    soKhach: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.khach.size ?? 0,
+    focus: phanLoaiByCode.get(normCode(e["Mã nhân viên"])) ?? [],
+  }));
+
+  function formatVisit(iso: string | undefined) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return null;
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  }
+
+  return (
+    <div className="mx-auto max-w-[1600px] p-6 lg:p-8">
+      <PageHeader
+        title="Tiến độ KPI"
+        description={selectedMonth ? `Kỳ đánh giá: ${selectedMonth}` : undefined}
+        actions={
+          <>
+            {ssList.length > 0 && <SsFilter ssList={ssList} />}
+            {months.length > 0 && selectedMonth && (
+              <MonthSelector months={months} selected={selectedMonth} />
+            )}
+          </>
+        }
+      />
+
+      {error && (
+        <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
+          Lỗi tải dữ liệu: {error.message}
+        </p>
+      )}
+
+      {groups.length === 0 && !error && (
+        <EmptyState>Không có nhân viên trong phạm vi của bạn.</EmptyState>
+      )}
+
+      <div className="space-y-6">
+        {groups.map(({ code, name, kpis, soCall, soKhach, focus }) => {
+          const codeMoi = chiTieuSummary(kpis, "Code mới");
+          const moiMoiSptt = chiTieuSummary(kpis, "Mở mới SPTT");
+          const moiMoi = nguongNhomSummary(kpis, "Mở mới");
+          const duyTriSptt = nguongNhomSummary(kpis, "Duy trì SPTT");
+          const duyTri = nguongNhomSummary(kpis, "Duy trì");
+          const doanhSoKeDonPMKpi = doanhSoSummary(kpis, "Doanh số kê đơn - phòng mạch");
+          const doanhSoThauKpi = doanhSoSummary(kpis, "Doanh số thầu");
+          return (
+          <Card key={code} padding="p-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <Avatar name={name ?? code} />
+                <h2 className="text-sm font-semibold text-slate-900">{ghepTenMa(name, code)}</h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="info">
+                  <IconClock className="h-3 w-3" /> {soCall} call
+                </Badge>
+                <Badge tone="brand">
+                  <IconUsers className="h-3 w-3" /> {soKhach} khách đã thăm
+                </Badge>
+              </div>
+            </div>
+            {(doanhSoKeDonPMKpi ||
+              doanhSoThauKpi ||
+              codeMoi ||
+              moiMoiSptt ||
+              moiMoi ||
+              duyTriSptt ||
+              duyTri) && (
+              <div className="mb-3 overflow-x-auto">
+                <table className="data-table w-full text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-slate-500">
+                      <th className="py-1.5 pr-3 font-medium">Chỉ tiêu</th>
+                      <th className="py-1.5 pr-3 font-medium">Thực hiện / Kế hoạch</th>
+                      <th className="py-1.5 font-medium">Điểm</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {doanhSoKeDonPMKpi && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">
+                          Doanh số kê đơn - phòng mạch
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {formatVnd(doanhSoKeDonPMKpi.thucHien)} /{" "}
+                          {formatVnd(doanhSoKeDonPMKpi.keHoach)}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              doanhSoKeDonPMKpi.dat
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {doanhSoKeDonPMKpi.diemThucTe}/{doanhSoKeDonPMKpi.diemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {doanhSoThauKpi && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">Doanh số thầu</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {formatVnd(doanhSoThauKpi.thucHien)} /{" "}
+                          {formatVnd(doanhSoThauKpi.keHoach)}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              doanhSoThauKpi.dat
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {doanhSoThauKpi.diemThucTe}/{doanhSoThauKpi.diemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {codeMoi && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">Code mới</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {codeMoi.soDat}/{codeMoi.tongSoChiTieu} chỉ tiêu đạt
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              codeMoi.soDat === codeMoi.tongSoChiTieu
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {codeMoi.tongDiemThucTe}/{codeMoi.tongDiemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {moiMoiSptt && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">Mở mới SPTT</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {moiMoiSptt.soDat}/{moiMoiSptt.tongSoChiTieu} chỉ tiêu đạt
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              moiMoiSptt.soDat === moiMoiSptt.tongSoChiTieu
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {moiMoiSptt.tongDiemThucTe}/{moiMoiSptt.tongDiemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {moiMoi && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">Mở mới</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {moiMoi.soDat}/{moiMoi.tongSoChiTieu} chỉ tiêu đạt
+                          {moiMoi.nguong != null && ` (ngưỡng: ${moiMoi.nguong})`}
+                          {moiMoi.hoanThanh && (
+                            <span className="ml-1 font-semibold text-emerald-700">
+                              Hoàn thành 100%
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              moiMoi.hoanThanh
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {moiMoi.diemTong}/{moiMoi.tongDiemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {duyTriSptt && (
+                      <tr className="border-b border-slate-100">
+                        <td className="py-1.5 pr-3 text-slate-900">Duy trì SPTT</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {duyTriSptt.soDat}/{duyTriSptt.tongSoChiTieu} chỉ tiêu đạt
+                          {duyTriSptt.nguong != null && ` (ngưỡng: ${duyTriSptt.nguong})`}
+                          {duyTriSptt.hoanThanh && (
+                            <span className="ml-1 font-semibold text-emerald-700">
+                              Hoàn thành 100%
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              duyTriSptt.hoanThanh
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {duyTriSptt.diemTong}/{duyTriSptt.tongDiemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                    {duyTri && (
+                      <tr className="border-b border-slate-100 last:border-0">
+                        <td className="py-1.5 pr-3 text-slate-900">Duy trì</td>
+                        <td className="py-1.5 pr-3 text-slate-700">
+                          {duyTri.soDat}/{duyTri.tongSoChiTieu} chỉ tiêu đạt
+                          {duyTri.nguong != null && ` (ngưỡng: ${duyTri.nguong})`}
+                          {duyTri.hoanThanh && (
+                            <span className="ml-1 font-semibold text-emerald-700">
+                              Hoàn thành 100%
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-1.5">
+                          <span
+                            className={`rounded-full px-2 py-0.5 font-medium ${
+                              duyTri.hoanThanh
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {duyTri.diemTong}/{duyTri.tongDiemKeHoach}
+                          </span>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {kpis.length === 0 ? (
+              <p className="text-sm text-slate-400">Chưa có chỉ tiêu cho kỳ này.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="data-table w-full text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-xs text-slate-500">
+                      <th className="py-2 pr-3 font-medium">Chỉ tiêu</th>
+                      <th className="py-2 pr-3 font-medium">Chi tiết</th>
+                      <th className="py-2 pr-3 font-medium">Mã khách</th>
+                      <th className="py-2 pr-3 font-medium">Kế hoạch</th>
+                      <th className="py-2 pr-3 font-medium">Thực hiện</th>
+                      <th className="py-2 pr-3 font-medium">% Đạt</th>
+                      <th className="py-2 pr-3 font-medium">Điểm</th>
+                      <th className="py-2 font-medium">Kết quả</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {kpis.map((k, i) => (
+                      <tr key={i} className="border-b border-slate-100 last:border-0">
+                        <td className="py-2 pr-3 text-slate-900">{k["Chỉ tiêu"]}</td>
+                        <td className="py-2 pr-3 text-slate-500">
+                          {k["Chi tiết Kế hoạch/sản phẩm"] ?? "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-700">
+                          {k["Mã khách"]
+                            ? ghepTenMa(tenKhachByMa.get(k["Mã khách"]), k["Mã khách"])
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-700">
+                          {planValue(k) != null
+                            ? isDoanhSoChiTieu(k["Chỉ tiêu"])
+                              ? formatVnd(planValue(k)!)
+                              : planValue(k)
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-700">
+                          {k["Số lượng thực hiện"] != null
+                            ? isDoanhSoChiTieu(k["Chỉ tiêu"])
+                              ? formatVnd(k["Số lượng thực hiện"])
+                              : k["Số lượng thực hiện"]
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-700">
+                          {k["Tỉ trọng thực hiện/kế hoạch"] != null
+                            ? `${(k["Tỉ trọng thực hiện/kế hoạch"] * 100).toFixed(0)}%`
+                            : "—"}
+                        </td>
+                        <td className="py-2 pr-3 text-slate-700">{k["Điểm KPIs"] ?? "—"}</td>
+                        <td className="py-2">
+                          {k["Chỉ tiêu"] === "Mở mới SPTT" ? (
+                            <MoMoiSpttDetail
+                              maNhanVien={k["Mã Nhân viên"]}
+                              sanPham={k["Chi tiết Kế hoạch/sản phẩm"] ?? ""}
+                              ketQua={k["Kết quả"] ?? ""}
+                              thangDanhGia={k["Tháng đánh giá"]}
+                            />
+                          ) : k["Chỉ tiêu"] === "Mở mới" ? (
+                            <MoMoiSpttDetail
+                              maNhanVien={k["Mã Nhân viên"]}
+                              sanPham={k["Chi tiết Kế hoạch/sản phẩm"] ?? ""}
+                              ketQua={k["Kết quả"] ?? ""}
+                              thangDanhGia={k["Tháng đánh giá"]}
+                              table="chi_tiet_mo_moi"
+                            />
+                          ) : k["Chỉ tiêu"] === "Code mới" ? (
+                            <CodeMoiDetail
+                              maNhanVien={k["Mã Nhân viên"]}
+                              ketQua={k["Kết quả"] ?? ""}
+                              thangDanhGia={k["Tháng đánh giá"]}
+                            />
+                          ) : (
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-xs font-medium ${resultColor(
+                                k["Kết quả"],
+                              )}`}
+                            >
+                              {k["Kết quả"] || "Chưa tính"}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {focus.length > 0 && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <h3 className="mb-2 text-xs font-semibold text-slate-900">
+                  Khách hàng cần tập trung trong tháng
+                </h3>
+                <div className="overflow-x-auto">
+                  <table className="data-table w-full text-left text-xs">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-slate-500">
+                        <th className="py-1.5 pr-3 font-medium">Mức độ</th>
+                        <th className="py-1.5 pr-3 font-medium">Khách hàng</th>
+                        <th className="py-1.5 pr-3 font-medium">Sản phẩm</th>
+                        <th className="py-1.5 pr-3 font-medium">Lấy hàng gần nhất</th>
+                        <th className="py-1.5 pr-3 font-medium">Viếng thăm gần nhất</th>
+                        <th className="py-1.5 font-medium">Kết quả thực hiện</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {focus.map((f, i) => {
+                        const maKhachNorm = (f.ma_khach ?? "").trim().toUpperCase();
+                        const sanPhamNorm = (f.ten_san_pham ?? "").trim().toLowerCase();
+                        const visit = formatVisit(lastVisitByKey.get(`${code}|${maKhachNorm}`));
+                        const soLanVieng = visitCountThisMonth.get(`${code}|${maKhachNorm}`) ?? 0;
+                        const ketQuaThucHien = daLapDonSet.has(
+                          `${code}|${maKhachNorm}|${sanPhamNorm}`,
+                        )
+                          ? "Đã lặp đơn"
+                          : soLanVieng > 0
+                            ? `Đã viếng thăm ${soLanVieng} lần trong tháng ${thangDanhGia}`
+                            : "Chưa viếng thăm";
+                        return (
+                          <tr key={i} className="border-b border-slate-100 last:border-0">
+                            <td className="py-1.5 pr-3">
+                              <span
+                                className={`rounded-full px-2 py-0.5 font-medium ${canhBaoBadge(
+                                  f.muc_do_canh_bao,
+                                )}`}
+                              >
+                                {f.muc_do_canh_bao || "—"}
+                              </span>
+                            </td>
+                            <td className="py-1.5 pr-3 text-slate-900">
+                              {f.ten_khach || f.ma_khach || "—"}
+                              {f.ma_khach && (
+                                <span className="ml-1 text-slate-400">
+                                  ({(f.ma_khach ?? "").toUpperCase()})
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-1.5 pr-3 text-slate-700">
+                              {f.ten_san_pham ?? "—"}
+                            </td>
+                            <td className="py-1.5 pr-3 text-slate-700">
+                              {f.don_gan_nhat || "—"}
+                            </td>
+                            <td className="py-1.5 pr-3">
+                              {visit ? (
+                                <span className="text-slate-700">{visit}</span>
+                              ) : (
+                                <span className="text-red-600">Chưa từng viếng thăm</span>
+                              )}
+                            </td>
+                            <td className="py-1.5">
+                              <span
+                                className={`rounded-full px-2 py-0.5 font-medium ${ketQuaThucHienBadge(
+                                  ketQuaThucHien,
+                                )}`}
+                              >
+                                {ketQuaThucHien}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
