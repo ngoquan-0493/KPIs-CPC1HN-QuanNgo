@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentEmployee } from "@/lib/current-employee";
+import { mergeSaleRowsByMonth } from "@/lib/sales-channel";
 import { revalidatePath } from "next/cache";
 
 // Chan quyen o TANG SERVER, khong dua hoan toan vao RLS: visible_employee_codes()
@@ -32,16 +33,109 @@ function weekBounds(dateStr?: string | null): { start: string; end: string } {
   return { start: fmt(monday), end: fmt(sunday) };
 }
 
-// Duyet mot de xuat AI: chuyen sang da_tao_task va tao ngay 1 dong cong viec
-// that trong ke_hoach_cong_viec_tuan, cung pattern voi WF13a (nguon_tao:
-// "ai_learning_loop") de khong lech convention voi tac vu tu dong.
-export async function approveDeXuat(id: number) {
+// Do ma khach hang (vd: P06561, C01177 - 1 chu cai + 5 chu so) xuat hien
+// trong 1 doan text tu do (ASM go tay). Ban sao cua ham cung ten trong
+// components/ai-review-actions.tsx (client) - giu 2 ban vi 1 ben chay server
+// action, 1 ben chay client component, khong dung chung module duoc.
+function trichMaKhach(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const matches = text.toUpperCase().match(/\b[A-Z]\d{5}\b/g);
+  return matches ? Array.from(new Set(matches)) : [];
+}
+
+// Noi dung cong viec cho 1 dong: neu co ma khach cu the thi gan vao cuoi
+// noi dung goc de NV/SS deu thay ro dang lam viec voi khach nao.
+function noiDungTheoKhach(noiDungGoc: string, maKhach: string | null): string {
+  if (!maKhach) return noiDungGoc;
+  return `${noiDungGoc} — tập trung khách ${maKhach}`;
+}
+
+// Tao cong viec that (ke_hoach_cong_viec_tuan) cho 1 de xuat da duyet/dieu
+// chinh. Neu danhSachMaKhach co NHIEU HON 1 ma khach: TACH thanh nhieu dong
+// khach hang - sanh pham rieng biet, moi dong co nut duyet/xac nhan doc lap -
+// dong DAU dung lai chinh id hien co (chi tao them 1 task), cac dong SAU
+// insert them ban ghi phan_hoi_hoc_tu_ai MOI (nhan ban cac field dung chung)
+// + task rieng. Tra ve ma khach se duoc gan cho chinh dong `id` (dong dau
+// tien, hoac null neu danh sach rong) de caller tu update ban ghi goc.
+async function taoCongViecTheoDanhSachKhach(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  params: {
+    id: number;
+    maNhanVien: string;
+    maSs: string | null;
+    reviewId: number | null;
+    noiDungGoc: string;
+    ghiChuQuanLy: string | null;
+    danhSachMaKhach: string[];
+  },
+): Promise<string | null> {
+  const { id, maNhanVien, maSs, reviewId, noiDungGoc, ghiChuQuanLy, danhSachMaKhach } = params;
+  const { start, end } = weekBounds();
+
+  const maKhachDauTien = danhSachMaKhach[0] ?? null;
+
+  const { error: insertTaskError } = await supabase.from("ke_hoach_cong_viec_tuan").insert({
+    tuan_bat_dau: start,
+    tuan_ket_thuc: end,
+    ma_nhan_vien: maNhanVien,
+    noi_dung: noiDungTheoKhach(noiDungGoc, maKhachDauTien),
+    han_hoan_thanh: end,
+    muc_do_uu_tien: "cao",
+    trang_thai: "proposed",
+    nguon_tao: "ai_learning_loop",
+    nguon_phan_hoi_ai_id: id,
+  });
+  if (insertTaskError) throw new Error(insertTaskError.message);
+
+  for (const maKhach of danhSachMaKhach.slice(1)) {
+    const { data: newRow, error: insertRowError } = await supabase
+      .from("phan_hoi_hoc_tu_ai")
+      .insert({
+        review_id: reviewId,
+        tuan_bat_dau: start,
+        loai_phan_hoi: "de_xuat_ca_nhan_tuan",
+        ma_nhan_vien_thuc_hien: maNhanVien,
+        ma_ss: maSs,
+        hanh_dong_goc: noiDungTheoKhach(noiDungGoc, maKhach),
+        quyet_dinh_quan_ly: "approved",
+        ghi_chu_quan_ly: ghiChuQuanLy,
+        trang_thai_thuc_hien: "da_tao_task",
+        trang_thai_nv: "cho_xac_nhan",
+        ma_khach: maKhach,
+      })
+      .select("id")
+      .single();
+    if (insertRowError) throw new Error(insertRowError.message);
+
+    const { error: insertTask2Error } = await supabase.from("ke_hoach_cong_viec_tuan").insert({
+      tuan_bat_dau: start,
+      tuan_ket_thuc: end,
+      ma_nhan_vien: maNhanVien,
+      noi_dung: noiDungTheoKhach(noiDungGoc, maKhach),
+      han_hoan_thanh: end,
+      muc_do_uu_tien: "cao",
+      trang_thai: "proposed",
+      nguon_tao: "ai_learning_loop",
+      nguon_phan_hoi_ai_id: newRow.id,
+    });
+    if (insertTask2Error) throw new Error(insertTask2Error.message);
+  }
+
+  return maKhachDauTien;
+}
+
+// Duyet mot de xuat AI: chuyen sang da_tao_task va tao ngay cong viec that
+// trong ke_hoach_cong_viec_tuan, cung pattern voi WF13a (nguon_tao:
+// "ai_learning_loop") de khong lech convention voi tac vu tu dong. Neu
+// maKhachCanTapTrung liet ke NHIEU ma khach, tu dong tach thanh nhieu dong
+// khach hang - san pham rieng (xem taoCongViecTheoDanhSachKhach).
+export async function approveDeXuat(id: number, maKhachCanTapTrung?: string) {
   await assertQuanLy();
   const supabase = await createClient();
 
   const { data: feedback, error: fetchError } = await supabase
     .from("phan_hoi_hoc_tu_ai")
-    .select("id,ma_nhan_vien_thuc_hien,hanh_dong_goc,tuan_bat_dau")
+    .select("id,ma_nhan_vien_thuc_hien,ma_ss,review_id,hanh_dong_goc,tuan_bat_dau")
     .eq("id", id)
     .single();
   if (fetchError) throw new Error(fetchError.message);
@@ -49,23 +143,18 @@ export async function approveDeXuat(id: number) {
     throw new Error("Đề xuất không có mã nhân viên thực hiện, không thể tạo việc.");
   }
 
-  // Luon dung tuan HIEN TAI (ngay duyet), khong dung feedback.tuan_bat_dau -
-  // truoc day dung tuan cua ban danh gia AI goc (thuong da qua), khien viec
-  // moi tao ra bi gan han hoan thanh trong qua khu ngay khi vua duyet.
-  const { start, end } = weekBounds();
+  const danhSachMaKhach = trichMaKhach(maKhachCanTapTrung);
+  const noiDungGoc = feedback.hanh_dong_goc ?? "Hành động đề xuất từ AI Weekly Review";
 
-  const { error: insertError } = await supabase.from("ke_hoach_cong_viec_tuan").insert({
-    tuan_bat_dau: start,
-    tuan_ket_thuc: end,
-    ma_nhan_vien: feedback.ma_nhan_vien_thuc_hien,
-    noi_dung: feedback.hanh_dong_goc,
-    han_hoan_thanh: end,
-    muc_do_uu_tien: "cao",
-    trang_thai: "proposed",
-    nguon_tao: "ai_learning_loop",
-    nguon_phan_hoi_ai_id: feedback.id,
+  const maKhachDauTien = await taoCongViecTheoDanhSachKhach(supabase, {
+    id: feedback.id,
+    maNhanVien: feedback.ma_nhan_vien_thuc_hien,
+    maSs: feedback.ma_ss,
+    reviewId: feedback.review_id,
+    noiDungGoc,
+    ghiChuQuanLy: null,
+    danhSachMaKhach,
   });
-  if (insertError) throw new Error(insertError.message);
 
   const { error: updateError } = await supabase
     .from("phan_hoi_hoc_tu_ai")
@@ -77,6 +166,8 @@ export async function approveDeXuat(id: number) {
       trang_thai_nv: "cho_xac_nhan",
       ly_do_tu_choi_nv: null,
       thoi_gian_nv_xac_nhan: null,
+      ma_khach: maKhachDauTien,
+      hanh_dong_goc: noiDungTheoKhach(noiDungGoc, maKhachDauTien),
     })
     .eq("id", id);
   if (updateError) throw new Error(updateError.message);
@@ -84,13 +175,15 @@ export async function approveDeXuat(id: number) {
   revalidatePath("/ai-review");
 }
 
-// Bo / dieu chinh mot de xuat AI: luu ly do vao quyet_dinh_quan_ly (text tu
-// do), khong tao cong viec. Ly do nay se duoc dung lam bai hoc de AI khong
-// de xuat lai kieu tuong tu.
-export async function adjustDeXuat(id: number, lyDo: string) {
+// HUY hoan toan 1 de xuat AI: khong tao cong viec, khong co NV nao phai lam
+// gi ca - dung khi de xuat khong con phu hop (NV nghi viec, y tuong chung
+// chung khong dung...). Ly do luu vao quyet_dinh_quan_ly, dung lam bai hoc de
+// AI khong de xuat lai kieu tuong tu. Khac voi dieuChinhDeXuat ben duoi (van
+// tao viec that, chi doi huong sang khach cu the).
+export async function huyDeXuat(id: number, lyDo: string) {
   await assertQuanLy();
   const trimmed = lyDo.trim();
-  if (!trimmed) throw new Error("Cần nhập lý do trước khi bỏ/điều chỉnh đề xuất.");
+  if (!trimmed) throw new Error("Cần nhập lý do trước khi hủy đề xuất.");
 
   const supabase = await createClient();
   const { error } = await supabase
@@ -101,6 +194,64 @@ export async function adjustDeXuat(id: number, lyDo: string) {
     })
     .eq("id", id);
   if (error) throw new Error(error.message);
+
+  revalidatePath("/ai-review");
+}
+
+// DIEU CHINH mot de xuat AI: khac HUY o cho VAN TAO CONG VIEC THAT cho NV
+// (giong approveDeXuat), nhung thay vi giu nguyen hanh_dong_goc chung chung
+// cua AI, ASM ghi de bang huong dan cu the (ghi chu) + bat buoc chi ro ma
+// khach hang can tap trung. Neu liet ke NHIEU ma khach, tach thanh nhieu
+// dong khach hang - san pham rieng (xem taoCongViecTheoDanhSachKhach) - moi
+// dong co nut duyet/xac nhan doc lap, khong bat buoc phai xu ly ca loat.
+export async function dieuChinhDeXuat(id: number, ghiChu: string, maKhachCanTapTrung: string) {
+  await assertQuanLy();
+  const trimmedGhiChu = ghiChu.trim();
+  const danhSachMaKhach = trichMaKhach(maKhachCanTapTrung);
+  if (danhSachMaKhach.length === 0) {
+    throw new Error(
+      "Cần nhập ít nhất 1 mã khách hàng hợp lệ (vd: P06561). Nếu không có khách cụ thể, dùng nút Duyệt thay vì Điều chỉnh.",
+    );
+  }
+
+  const supabase = await createClient();
+
+  const { data: feedback, error: fetchError } = await supabase
+    .from("phan_hoi_hoc_tu_ai")
+    .select("id,ma_nhan_vien_thuc_hien,ma_ss,review_id,hanh_dong_goc")
+    .eq("id", id)
+    .single();
+  if (fetchError) throw new Error(fetchError.message);
+  if (!feedback.ma_nhan_vien_thuc_hien) {
+    throw new Error("Đề xuất không có mã nhân viên thực hiện, không thể tạo việc.");
+  }
+
+  const noiDungGoc = trimmedGhiChu || feedback.hanh_dong_goc || "Điều chỉnh từ đề xuất AI";
+
+  const maKhachDauTien = await taoCongViecTheoDanhSachKhach(supabase, {
+    id: feedback.id,
+    maNhanVien: feedback.ma_nhan_vien_thuc_hien,
+    maSs: feedback.ma_ss,
+    reviewId: feedback.review_id,
+    noiDungGoc,
+    ghiChuQuanLy: trimmedGhiChu || null,
+    danhSachMaKhach,
+  });
+
+  const { error: updateError } = await supabase
+    .from("phan_hoi_hoc_tu_ai")
+    .update({
+      quyet_dinh_quan_ly: "approved",
+      ghi_chu_quan_ly: trimmedGhiChu || null,
+      ma_khach: maKhachDauTien,
+      hanh_dong_goc: noiDungTheoKhach(noiDungGoc, maKhachDauTien),
+      trang_thai_thuc_hien: "da_tao_task",
+      trang_thai_nv: "cho_xac_nhan",
+      ly_do_tu_choi_nv: null,
+      thoi_gian_nv_xac_nhan: null,
+    })
+    .eq("id", id);
+  if (updateError) throw new Error(updateError.message);
 
   revalidatePath("/ai-review");
 }
@@ -369,4 +520,64 @@ export async function getChamCongTrongTuan(
     .limit(100);
   if (error) throw new Error(error.message);
   return (data ?? []) as ChamCongDoiChieu[];
+}
+
+export type DonHangDoiChieu = {
+  ma_khach: string | null;
+  ten_khach: string | null;
+  ten_mat_hang: string | null;
+  so_luong: number | null;
+  gia_ban: number | null;
+  doanh_thu: number | null;
+  ngay: string | null;
+  kenh: string | null;
+};
+
+// Lay danh sach don hang thuc te cua 1 NV trong khoang ngay cua 1 cong viec,
+// de SS/ASM doi chieu voi doanh thu phat sinh truoc khi xac nhan ket qua.
+//
+// Doc ca 2 bang vi khong bang nao 1 minh du du lieu:
+// - "Du lieu sale thang hien tai": chi co du lieu THANG HIEN TAI (bi xoa &
+//   nap lai moi lan dong bo), nhung la nguon DUY NHAT co don hang moi phat
+//   sinh trong thang dang chay.
+// - "Du lieu sale tong": luu lich su nhieu thang nhung dong bo co do tre -
+//   thuc te no dang dung lai o cuoi thang truoc, chua co du lieu thang nay
+//   (da kiem tra truc tiep: max(ngay) la ngay cuoi thang truoc tai thoi diem
+//   viet ham nay). Van giu de doi chieu duoc cac cong viec cua thang cu.
+//
+// Gop ca hai, khong khop theo ma khach/san pham cu the vi ly do tuong tu
+// getChamCongTrongTuan o tren.
+export async function getDonHangTrongTuan(
+  maNhanVien: string,
+  tuanBatDau: string,
+  hanHoanThanh: string,
+): Promise<DonHangDoiChieu[]> {
+  const supabase = await createClient();
+  const cols = "ma_khach,ten_khach,ten_mat_hang,so_luong,gia_ban,doanh_thu,ngay,kenh";
+
+  const [thangHienTai, tong] = await Promise.all([
+    supabase
+      .from("Du lieu sale thang hien tai")
+      .select(cols)
+      .eq("ma_nhan_vien", maNhanVien)
+      .gte("ngay", tuanBatDau)
+      .lte("ngay", hanHoanThanh)
+      .limit(200),
+    supabase
+      .from("Du lieu sale tong")
+      .select(cols)
+      .eq("ma_nhan_vien", maNhanVien)
+      .gte("ngay", tuanBatDau)
+      .lte("ngay", hanHoanThanh)
+      .limit(200),
+  ]);
+  if (thangHienTai.error) throw new Error(thangHienTai.error.message);
+  if (tong.error) throw new Error(tong.error.message);
+
+  const rows = mergeSaleRowsByMonth(
+    (tong.data ?? []) as DonHangDoiChieu[],
+    (thangHienTai.data ?? []) as DonHangDoiChieu[],
+  );
+  rows.sort((a, b) => (b.ngay ?? "").localeCompare(a.ngay ?? ""));
+  return rows.slice(0, 200);
 }

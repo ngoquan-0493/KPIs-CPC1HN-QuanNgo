@@ -1,7 +1,14 @@
 import { createClient } from "@/lib/supabase/server";
 import PeriodPicker from "@/components/period-picker";
 import SsFilter from "@/components/ss-filter";
-import { formatVnd, normalizeChannel, isExcludedSaleRow, fetchAllRows } from "@/lib/sales-channel";
+import NvFilter from "@/components/nv-filter";
+import {
+  formatVnd,
+  normalizeChannel,
+  isExcludedSaleRow,
+  fetchAllRows,
+  preferClosedMonthRows,
+} from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, SectionHeading, EmptyState, StatCard } from "@/components/ui";
 import { IconWallet, IconReceipt, IconUsers } from "@/components/icons";
@@ -19,7 +26,7 @@ type SaleRow = {
   trang_thai?: string | null;
 };
 
-type EmployeeSsRow = { ma_nhan_vien: string; ss: string | null };
+type EmployeeSsRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
 
 function topN(rows: SaleRow[], key: keyof SaleRow, n: number) {
   const totals = new Map<string, number>();
@@ -81,13 +88,14 @@ function normCode(code: string | null | undefined) {
 export default async function SalesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ nam?: string; thang?: string; ss?: string }>;
+  searchParams: Promise<{ nam?: string; thang?: string; ss?: string; nv?: string }>;
 }) {
   const sp = await searchParams;
   const now = new Date();
   const nam = Number(sp.nam ?? now.getFullYear());
   const thang = Number(sp.thang ?? now.getMonth() + 1);
   const selectedSs = sp.ss;
+  const selectedNv = sp.nv;
 
   const supabase = await createClient();
 
@@ -115,24 +123,34 @@ export default async function SalesPage({
         .eq("thang", thang)
         .range(from, to),
     ),
-    supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ss").neq("vi_tri", "ASM"),
+    supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien,ss").neq("vi_tri", "ASM"),
   ]);
 
   const ssByCode = new Map<string, string | null>();
+  const nameByCode = new Map<string, string | null>();
   for (const e of (empRes.data ?? []) as EmployeeSsRow[]) {
-    ssByCode.set(normCode(e.ma_nhan_vien), e.ss);
+    const code = normCode(e.ma_nhan_vien);
+    ssByCode.set(code, e.ss);
+    nameByCode.set(code, e.ten_nhan_vien);
   }
   const ssList = Array.from(new Set(Array.from(ssByCode.values()).filter((v): v is string => !!v))).sort(
     (a, b) => a.localeCompare(b),
   );
+  const employeeOptions = Array.from(nameByCode.entries())
+    .filter(([code]) => !selectedSs || ssByCode.get(code) === selectedSs)
+    .map(([code, name]) => ({ code, name: name ?? code }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const error = tongRes.error ?? hienTaiRes.error ?? empRes.error;
-  let rows = [
-    ...((tongRes.data ?? []) as SaleRow[]),
-    ...((hienTaiRes.data ?? []) as SaleRow[]),
-  ].filter((r) => !isExcludedSaleRow(r));
+  let rows = preferClosedMonthRows(
+    (tongRes.data ?? []) as SaleRow[],
+    (hienTaiRes.data ?? []) as SaleRow[],
+  ).filter((r) => !isExcludedSaleRow(r));
   if (selectedSs) {
     rows = rows.filter((r) => ssByCode.get(normCode(r.ma_nhan_vien)) === selectedSs);
+  }
+  if (selectedNv) {
+    rows = rows.filter((r) => normCode(r.ma_nhan_vien) === selectedNv);
   }
   const tongDoanhThu = rows.reduce((s, r) => s + (r.doanh_thu ?? 0), 0);
   const soDon = rows.length;
@@ -148,10 +166,13 @@ export default async function SalesPage({
     <div className="mx-auto max-w-[1600px] p-6 lg:p-8">
       <PageHeader
         title="Dashboard Doanh số"
-        description={`Kỳ báo cáo: Tháng ${thang}/${nam}${selectedSs ? ` · Nhóm ${selectedSs}` : ""}`}
+        description={`Kỳ báo cáo: Tháng ${thang}/${nam}${selectedSs ? ` · Nhóm ${selectedSs}` : ""}${
+          selectedNv ? ` · NV ${ghepTenMa(nameByCode.get(selectedNv), selectedNv)}` : ""
+        }`}
         actions={
           <>
             {ssList.length > 0 && <SsFilter ssList={ssList} />}
+            {employeeOptions.length > 0 && <NvFilter employees={employeeOptions} />}
             <PeriodPicker nam={nam} thang={thang} />
           </>
         }

@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { IconChartBar, IconTarget, IconSparkles, IconUsers } from "@/components/icons";
+import { IconChartBar, IconTarget, IconSparkles, IconUsers, IconBuilding, IconPackage } from "@/components/icons";
 
 const NAV = [
   { href: "/sales", label: "Doanh số", icon: IconChartBar },
   { href: "/kpi", label: "KPI", icon: IconTarget },
+  { href: "/customers", label: "Khách hàng", icon: IconBuilding },
+  { href: "/products", label: "Sản phẩm", icon: IconPackage },
   { href: "/ai-review", label: "Đề xuất AI", icon: IconSparkles },
   { href: "/team", label: "Đội nhóm", icon: IconUsers },
 ];

@@ -146,3 +146,13 @@ export function IconChevronDown(props: IconProps) {
     </Base>
   );
 }
+
+export function IconPackage(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3.5 7.5 12 3l8.5 4.5v9L12 21l-8.5-4.5Z" />
+      <path d="M3.5 7.5 12 12l8.5-4.5" />
+      <path d="M12 12v9" />
+    </Base>
+  );
+}

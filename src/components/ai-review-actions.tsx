@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useEffect, useMemo } from "react";
 import {
   approveDeXuat,
-  adjustDeXuat,
+  huyDeXuat,
+  dieuChinhDeXuat,
   addManualTask,
   duyetWeeklyReview,
   xacNhanKetQua,
@@ -12,8 +13,10 @@ import {
   nvTuChoiDeXuat,
   getChiTietKhachHangRuiRo,
   getChamCongTrongTuan,
+  getDonHangTrongTuan,
   type KhachHangRuiRo,
   type ChamCongDoiChieu,
+  type DonHangDoiChieu,
 } from "@/app/(app)/ai-review/actions";
 import { Card, Badge } from "@/components/ui";
 import { IconPlus } from "@/components/icons";
@@ -145,18 +148,24 @@ export function DeXuatCard({
   feedback,
   employeeName,
   ssName,
+  hideEmployeeName = false,
 }: {
   feedback: PendingFeedback;
   employeeName: string;
   ssName: string | null;
+  hideEmployeeName?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [showAdjust, setShowAdjust] = useState(false);
-  const [lyDo, setLyDo] = useState("");
+  const [showHuy, setShowHuy] = useState(false);
+  const [lyDoHuy, setLyDoHuy] = useState("");
+  const [showDieuChinh, setShowDieuChinh] = useState(false);
+  const [ghiChuDieuChinh, setGhiChuDieuChinh] = useState("");
+  const [maKhachDieuChinh, setMaKhachDieuChinh] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [khachHangRows, setKhachHangRows] = useState<KhachHangRuiRo[] | null>(null);
   const [loadingKhachHang, setLoadingKhachHang] = useState(false);
+  const [maKhachCanTapTrung, setMaKhachCanTapTrung] = useState("");
 
   function handleToggleExpand() {
     const next = !expanded;
@@ -174,20 +183,34 @@ export function DeXuatCard({
     setErrorMsg(null);
     startTransition(async () => {
       try {
-        await approveDeXuat(feedback.id);
+        await approveDeXuat(feedback.id, maKhachCanTapTrung);
       } catch (e) {
         setErrorMsg(e instanceof Error ? e.message : "Có lỗi xảy ra.");
       }
     });
   }
 
-  function handleAdjustSubmit() {
+  function handleHuySubmit() {
     setErrorMsg(null);
     startTransition(async () => {
       try {
-        await adjustDeXuat(feedback.id, lyDo);
-        setShowAdjust(false);
-        setLyDo("");
+        await huyDeXuat(feedback.id, lyDoHuy);
+        setShowHuy(false);
+        setLyDoHuy("");
+      } catch (e) {
+        setErrorMsg(e instanceof Error ? e.message : "Có lỗi xảy ra.");
+      }
+    });
+  }
+
+  function handleDieuChinhSubmit() {
+    setErrorMsg(null);
+    startTransition(async () => {
+      try {
+        await dieuChinhDeXuat(feedback.id, ghiChuDieuChinh, maKhachDieuChinh);
+        setShowDieuChinh(false);
+        setGhiChuDieuChinh("");
+        setMaKhachDieuChinh("");
       } catch (e) {
         setErrorMsg(e instanceof Error ? e.message : "Có lỗi xảy ra.");
       }
@@ -202,7 +225,9 @@ export function DeXuatCard({
         className="flex w-full items-start justify-between gap-4 text-left"
       >
         <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-900">{employeeName}</p>
+          {!hideEmployeeName && (
+            <p className="text-sm font-medium text-slate-900">{employeeName}</p>
+          )}
           <p className="truncate text-xs text-slate-600">{feedback.hanh_dong_goc ?? "—"}</p>
         </div>
         <span className="shrink-0 text-xs text-slate-400">{expanded ? "Thu gọn ▲" : "Chi tiết ▼"}</span>
@@ -231,7 +256,15 @@ export function DeXuatCard({
 
       {errorMsg && <p className="mt-2 text-xs text-red-600">{errorMsg}</p>}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <input
+        type="text"
+        value={maKhachCanTapTrung}
+        onChange={(e) => setMaKhachCanTapTrung(e.target.value)}
+        placeholder="Không bắt buộc: mã khách cần tập trung, cách nhau bằng dấu phẩy (vd: P06561, C01177)"
+        className={`mt-3 w-full ${inputClass}`}
+      />
+
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           disabled={isPending}
           onClick={handleApprove}
@@ -241,39 +274,96 @@ export function DeXuatCard({
         </button>
         <button
           disabled={isPending}
-          onClick={() => setShowAdjust((v) => !v)}
+          onClick={() => {
+            setShowDieuChinh((v) => !v);
+            setShowHuy(false);
+          }}
+          className="rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50"
+        >
+          Điều chỉnh
+        </button>
+        <button
+          disabled={isPending}
+          onClick={() => {
+            setShowHuy((v) => !v);
+            setShowDieuChinh(false);
+          }}
           className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50"
         >
-          Bỏ / điều chỉnh
+          Hủy
         </button>
       </div>
 
-      {showAdjust && (
+      {showDieuChinh && (
+        <div className="mt-3 space-y-2 rounded-xl bg-amber-50 p-3">
+          <p className="text-xs text-amber-800">
+            Vẫn tạo việc thật cho nhân viên, nhưng thay nội dung chung chung của AI bằng hướng dẫn
+            cụ thể của bạn — bắt buộc nêu rõ mã khách hàng cần tập trung để bước xác nhận kết quả
+            sau này đối chiếu đúng từng khách.
+          </p>
+          <textarea
+            value={ghiChuDieuChinh}
+            onChange={(e) => setGhiChuDieuChinh(e.target.value)}
+            placeholder="Không bắt buộc: hướng dẫn cụ thể cho nhân viên (nếu để trống sẽ giữ nội dung gốc của AI)..."
+            rows={2}
+            className={`w-full ${inputClass}`}
+          />
+          <input
+            type="text"
+            value={maKhachDieuChinh}
+            onChange={(e) => setMaKhachDieuChinh(e.target.value)}
+            placeholder="Bắt buộc: mã khách cần tập trung, cách nhau bằng dấu phẩy (vd: P06561, C01177)"
+            className={`w-full ${inputClass}`}
+          />
+          <div className="flex gap-2">
+            <button
+              disabled={isPending || !maKhachDieuChinh.trim()}
+              onClick={handleDieuChinhSubmit}
+              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+            >
+              Xác nhận điều chỉnh
+            </button>
+            <button
+              disabled={isPending}
+              onClick={() => {
+                setShowDieuChinh(false);
+                setGhiChuDieuChinh("");
+                setMaKhachDieuChinh("");
+              }}
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100"
+            >
+              Hủy thao tác
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showHuy && (
         <div className="mt-3 space-y-2">
           <textarea
-            value={lyDo}
-            onChange={(e) => setLyDo(e.target.value)}
-            placeholder="Nhập lý do bỏ/điều chỉnh đề xuất này..."
+            value={lyDoHuy}
+            onChange={(e) => setLyDoHuy(e.target.value)}
+            placeholder="Bắt buộc: vì sao hủy đề xuất này (không còn phù hợp, NV nghỉ việc, ý tưởng chung chung...)? AI sẽ dùng lý do này để học."
             rows={2}
             className={`w-full ${inputClass}`}
           />
           <div className="flex gap-2">
             <button
-              disabled={isPending || !lyDo.trim()}
-              onClick={handleAdjustSubmit}
-              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+              disabled={isPending || !lyDoHuy.trim()}
+              onClick={handleHuySubmit}
+              className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
             >
-              Xác nhận bỏ/điều chỉnh
+              Xác nhận hủy
             </button>
             <button
               disabled={isPending}
               onClick={() => {
-                setShowAdjust(false);
-                setLyDo("");
+                setShowHuy(false);
+                setLyDoHuy("");
               }}
               className="rounded-lg px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-100"
             >
-              Hủy
+              Đóng
             </button>
           </div>
         </div>
@@ -419,18 +509,152 @@ function ChamCongDoiChieuList({ rows, loading }: { rows: ChamCongDoiChieu[] | nu
   );
 }
 
+function formatTien(n: number | null) {
+  if (n === null || n === undefined) return "—";
+  return n.toLocaleString("vi-VN");
+}
+
+function DonHangDoiChieuList({ rows, loading }: { rows: DonHangDoiChieu[] | null; loading: boolean }) {
+  if (loading) return <p className="mt-2 text-xs text-slate-400">Đang tải dữ liệu đơn hàng…</p>;
+  if (rows === null) return null;
+  if (rows.length === 0) {
+    return (
+      <p className="mt-2 text-xs text-slate-400">
+        Không có đơn hàng nào của nhân viên này trong khoảng thời gian của việc.
+      </p>
+    );
+  }
+  const tongDoanhThu = rows.reduce((s, r) => s + (r.doanh_thu ?? 0), 0);
+  return (
+    <div className="mt-2 max-h-56 space-y-1.5 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2">
+      <div className="rounded-lg bg-emerald-50 px-2 py-1.5 text-[11px] font-medium text-emerald-800">
+        Tổng doanh thu trong khoảng thời gian: {formatTien(tongDoanhThu)}
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} className="rounded-lg bg-white p-2 text-[11px] shadow-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-medium text-slate-800">{r.ten_khach ?? r.ma_khach ?? "—"}</span>
+            <span className="shrink-0 text-slate-400">{r.ngay ?? "—"}</span>
+          </div>
+          {r.ten_mat_hang && (
+            <p className="text-slate-500">
+              {r.ten_mat_hang} — SL {r.so_luong ?? "—"} × {formatTien(r.gia_ban)}
+            </p>
+          )}
+          <p className="mt-1 font-medium text-emerald-700">Doanh thu: {formatTien(r.doanh_thu)}</p>
+          {r.kenh && <p className="text-slate-400">Kênh: {r.kenh}</p>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Do ma khach hang (vd: P06561, C01177 - 1 chu cai + 5 chu so, dung format
+// thuc te cua khach_hang_master) xuat hien trong 1 hoac nhieu doan text -
+// dung de nhan dien de xuat "cu the theo khach" (AI ghi thang trong
+// hanh_dong_goc, hoac SS/ASM tu go them luc duyet vao ma_khach_can_tap_trung)
+// khac voi de xuat "chung chung" (khong co ma khach nao).
+function trichMaKhach(...texts: (string | null | undefined)[]): string[] {
+  const found = new Set<string>();
+  for (const t of texts) {
+    if (!t) continue;
+    const matches = t.toUpperCase().match(/\b[A-Z]\d{5}\b/g);
+    matches?.forEach((m) => found.add(m));
+  }
+  return Array.from(found);
+}
+
+// Neu de xuat neu ro khach hang can tap trung (maKhachList khong rong): hien
+// so lan ghe + chi tiet don hang RIENG cho tung khach do. Neu de xuat chung
+// chung (khong ma khach nao): chi hien so tong quan ca tuan, khong can liet
+// ke tung dong - dung nhu yeu cau cua ASM (do xuat cu the can doi chieu sau,
+// do xuat chung chung chi can biet tong the co on khong).
+function DoiChieuTomTat({
+  maKhachList,
+  chamCongRows,
+  donHangRows,
+  loadingChamCong,
+  loadingDonHang,
+}: {
+  maKhachList: string[];
+  chamCongRows: ChamCongDoiChieu[] | null;
+  donHangRows: DonHangDoiChieu[] | null;
+  loadingChamCong: boolean;
+  loadingDonHang: boolean;
+}) {
+  if (loadingChamCong || loadingDonHang) {
+    return <p className="mt-2 text-xs text-slate-400">Đang tải dữ liệu đối chiếu…</p>;
+  }
+  if (chamCongRows === null || donHangRows === null) return null;
+
+  if (maKhachList.length > 0) {
+    return (
+      <div className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-slate-50 p-2">
+        <p className="text-[11px] font-medium text-slate-600">
+          Đề xuất nêu rõ khách hàng cần tập trung — đối chiếu riêng từng khách:
+        </p>
+        {maKhachList.map((ma) => {
+          const gheTham = chamCongRows.filter((r) => (r.ma_khach ?? "").toUpperCase() === ma);
+          const donHang = donHangRows.filter((r) => (r.ma_khach ?? "").toUpperCase() === ma);
+          const tongDoanhThu = donHang.reduce((s, r) => s + (r.doanh_thu ?? 0), 0);
+          const ten = gheTham[0]?.ten_khach_hang ?? donHang[0]?.ten_khach ?? null;
+          return (
+            <div key={ma} className="rounded-lg bg-white p-2 text-[11px] shadow-sm">
+              <p className="font-medium text-slate-800">
+                {ma}
+                {ten ? ` — ${ten}` : ""}
+              </p>
+              <p className="text-slate-600">
+                Ghé thăm: <span className="font-medium">{gheTham.length} lần</span> · Đơn hàng:{" "}
+                <span className="font-medium">{donHang.length}</span> · Doanh thu:{" "}
+                <span className="font-medium text-emerald-700">{formatTien(tongDoanhThu)}</span>
+              </p>
+              {donHang.length > 0 && (
+                <div className="mt-1 space-y-0.5">
+                  {donHang.map((r, i) => (
+                    <p key={i} className="text-slate-500">
+                      {r.ngay ?? "—"} · {r.ten_mat_hang ?? "—"} · SL {r.so_luong ?? "—"} ·{" "}
+                      {formatTien(r.doanh_thu)}
+                    </p>
+                  ))}
+                </div>
+              )}
+              {gheTham.length === 0 && donHang.length === 0 && (
+                <p className="text-amber-600">
+                  Chưa ghé thăm, chưa có đơn hàng nào của khách này trong tuần.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  const tongDoanhThu = donHangRows.reduce((s, r) => s + (r.doanh_thu ?? 0), 0);
+  return (
+    <div className="mt-2 rounded-xl bg-slate-50 p-2 text-[11px] text-slate-700">
+      Đề xuất chung chung — tổng quan trong tuần: <span className="font-medium">{chamCongRows.length}</span>{" "}
+      lượt ghé thăm · <span className="font-medium">{donHangRows.length}</span> đơn hàng ·{" "}
+      <span className="font-medium text-emerald-700">{formatTien(tongDoanhThu)}</span> doanh thu
+    </div>
+  );
+}
+
 export function XacNhanKetQuaCard({
   feedback,
   employeeName,
   hanHoanThanh,
   tuanBatDau,
   trangThaiNv,
+  maKhach,
 }: {
   feedback: { id: number; hanh_dong_goc: string | null; ma_nhan_vien_thuc_hien: string };
   employeeName: string;
   hanHoanThanh: string | null;
   tuanBatDau: string | null;
   trangThaiNv: string | null;
+  maKhach?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [thanhCong, setThanhCong] = useState<boolean | null>(null);
@@ -442,6 +666,9 @@ export function XacNhanKetQuaCard({
   const [showChamCong, setShowChamCong] = useState(false);
   const [chamCongRows, setChamCongRows] = useState<ChamCongDoiChieu[] | null>(null);
   const [loadingChamCong, setLoadingChamCong] = useState(false);
+  const [showDonHang, setShowDonHang] = useState(false);
+  const [donHangRows, setDonHangRows] = useState<DonHangDoiChieu[] | null>(null);
+  const [loadingDonHang, setLoadingDonHang] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
   const isOverdue = !!hanHoanThanh && hanHoanThanh < today;
@@ -450,16 +677,64 @@ export function XacNhanKetQuaCard({
   const coTheXacNhanKetQua = trangThaiNv === "da_xac_nhan" || isOverdue;
   const nhanNv = chamCongLabel(trangThaiNv);
 
-  function handleToggleChamCong() {
-    const next = !showChamCong;
-    setShowChamCong(next);
-    if (next && chamCongRows === null && !loadingChamCong && tuanBatDau && hanHoanThanh) {
+  // Uu tien cot ma_khach co cau truc (moi dong = 1 khach hang - san pham, ke
+  // tu khi tach dong). Fallback ve do chu trong hanh_dong_goc chi de phong
+  // du lieu cu/WF12 chua kip cap nhat con de lai text tu do co ma khach.
+  const maKhachList = useMemo(
+    () => (maKhach ? [maKhach.toUpperCase()] : trichMaKhach(feedback.hanh_dong_goc)),
+    [feedback.hanh_dong_goc, maKhach],
+  );
+
+  // Tu dong tai du lieu doi chieu (khong doi nguoi dung phai bam nut) ngay
+  // khi biet duoc khoang ngay cua viec, de luon co can cu ngay trong phan
+  // "Ket qua" - nut Xem chi tiet ben duoi chi la bat/tat hien thi danh sach
+  // day du, khong quyet dinh co tai du lieu hay khong nua.
+  useEffect(() => {
+    if (!tuanBatDau || !hanHoanThanh) return;
+
+    async function loadChamCong() {
       setLoadingChamCong(true);
-      getChamCongTrongTuan(feedback.ma_nhan_vien_thuc_hien, tuanBatDau, hanHoanThanh)
-        .then(setChamCongRows)
-        .catch(() => setChamCongRows([]))
-        .finally(() => setLoadingChamCong(false));
+      try {
+        const rows = await getChamCongTrongTuan(
+          feedback.ma_nhan_vien_thuc_hien,
+          tuanBatDau!,
+          hanHoanThanh!,
+        );
+        setChamCongRows(rows);
+      } catch {
+        setChamCongRows([]);
+      } finally {
+        setLoadingChamCong(false);
+      }
     }
+
+    async function loadDonHang() {
+      setLoadingDonHang(true);
+      try {
+        const rows = await getDonHangTrongTuan(
+          feedback.ma_nhan_vien_thuc_hien,
+          tuanBatDau!,
+          hanHoanThanh!,
+        );
+        setDonHangRows(rows);
+      } catch {
+        setDonHangRows([]);
+      } finally {
+        setLoadingDonHang(false);
+      }
+    }
+
+    loadChamCong();
+    loadDonHang();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedback.ma_nhan_vien_thuc_hien, tuanBatDau, hanHoanThanh]);
+
+  function handleToggleChamCong() {
+    setShowChamCong((v) => !v);
+  }
+
+  function handleToggleDonHang() {
+    setShowDonHang((v) => !v);
   }
 
   function handleSubmit() {
@@ -504,38 +779,60 @@ export function XacNhanKetQuaCard({
           </div>
         </div>
         {!open && !confirmRevert && (
-          <div className="flex shrink-0 flex-col items-end gap-1.5">
-            <div className="flex gap-2">
-              <button
-                onClick={() => setOpen(true)}
-                disabled={!coTheXacNhanKetQua}
-                title={
-                  coTheXacNhanKetQua ? undefined : "Chờ nhân viên xác nhận nhận việc, hoặc đợi quá hạn"
-                }
-                className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-              >
-                Xác nhận kết quả
-              </button>
-              <button
-                disabled={isPending}
-                onClick={() => setConfirmRevert(true)}
-                className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50"
-              >
-                Chỉnh sửa
-              </button>
-            </div>
+          <div className="flex shrink-0 gap-2">
             <button
-              onClick={handleToggleChamCong}
-              className="text-[11px] font-medium text-blue-700 hover:underline"
+              onClick={() => setOpen(true)}
+              disabled={!coTheXacNhanKetQua}
+              title={
+                coTheXacNhanKetQua ? undefined : "Chờ nhân viên xác nhận nhận việc, hoặc đợi quá hạn"
+              }
+              className="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
             >
-              {showChamCong ? "Ẩn chấm công ▲" : "Xem chấm công trong tuần ▼"}
+              Xác nhận kết quả
+            </button>
+            <button
+              disabled={isPending}
+              onClick={() => setConfirmRevert(true)}
+              className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-200 disabled:opacity-50"
+            >
+              Chỉnh sửa
             </button>
           </div>
         )}
       </div>
 
-      {showChamCong && !open && (
+      {!confirmRevert && (
+        <DoiChieuTomTat
+          maKhachList={maKhachList}
+          chamCongRows={chamCongRows}
+          donHangRows={donHangRows}
+          loadingChamCong={loadingChamCong}
+          loadingDonHang={loadingDonHang}
+        />
+      )}
+
+      {!confirmRevert && (
+        <div className="mt-1.5 flex flex-wrap gap-3">
+          <button
+            onClick={handleToggleChamCong}
+            className="text-[11px] font-medium text-blue-700 hover:underline"
+          >
+            {showChamCong ? "Ẩn danh sách chấm công ▲" : "Xem toàn bộ danh sách chấm công ▼"}
+          </button>
+          <button
+            onClick={handleToggleDonHang}
+            className="text-[11px] font-medium text-emerald-700 hover:underline"
+          >
+            {showDonHang ? "Ẩn danh sách đơn hàng ▲" : "Xem toàn bộ danh sách đơn hàng ▼"}
+          </button>
+        </div>
+      )}
+
+      {showChamCong && !confirmRevert && (
         <ChamCongDoiChieuList rows={chamCongRows} loading={loadingChamCong} />
+      )}
+      {showDonHang && !confirmRevert && (
+        <DonHangDoiChieuList rows={donHangRows} loading={loadingDonHang} />
       )}
 
       {confirmRevert && !open && (

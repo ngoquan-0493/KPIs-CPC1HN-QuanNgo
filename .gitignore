@@ -42,3 +42,8 @@ next-env.d.ts
 
 # scratch files (not part of the project)
 _test_unlink.txt
+
+# netlify CLI local artifacts (not part of the project)
+.netlify/
+deno.lock
+deploy-*.zip

@@ -3,7 +3,8 @@ import MoMoiSpttDetail from "@/components/mo-moi-sptt-detail";
 import CodeMoiDetail from "@/components/code-moi-detail";
 import MonthSelector from "@/components/month-selector";
 import SsFilter from "@/components/ss-filter";
-import { formatVnd, isExcludedSaleRow, fetchAllRows } from "@/lib/sales-channel";
+import NvFilter from "@/components/nv-filter";
+import { formatVnd, isExcludedSaleRow, fetchAllRows, preferClosedMonthRows } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
 import { IconClock, IconUsers } from "@/components/icons";
@@ -199,10 +200,10 @@ function nguongNhomSummary(
 export default async function KpiPage({
   searchParams,
 }: {
-  searchParams: Promise<{ thang?: string; ss?: string }>;
+  searchParams: Promise<{ thang?: string; ss?: string; nv?: string }>;
 }) {
   const supabase = await createClient();
-  const { thang, ss: selectedSs } = await searchParams;
+  const { thang, ss: selectedSs, nv: selectedNv } = await searchParams;
 
   const monthsRes = await supabase
     .from("Chi tieu KPIs")
@@ -294,10 +295,10 @@ export default async function KpiPage({
   // số theo kênh (kê đơn - phòng mạch / thầu) đã chuyển sang đọc trực tiếp từ
   // "Chi tieu KPIs" (doanhSoSummary) nên không cần tự tổng hợp lại ở đây nữa.
   const daLapDonSet = new Set<string>();
-  for (const r of [
-    ...((revenueTongRes.data ?? []) as RevenueRow[]),
-    ...((revenueHienTaiRes.data ?? []) as RevenueRow[]),
-  ]) {
+  for (const r of preferClosedMonthRows(
+    (revenueTongRes.data ?? []) as RevenueRow[],
+    (revenueHienTaiRes.data ?? []) as RevenueRow[],
+  )) {
     if (isExcludedSaleRow(r)) continue;
     const key = normCode(r.ma_nhan_vien);
     if (!key) continue;
@@ -438,7 +439,13 @@ export default async function KpiPage({
   const ssList = Array.from(new Set(employees.map((e) => e.SS).filter((v): v is string => !!v))).sort(
     (a, b) => a.localeCompare(b),
   );
-  const scopedEmployees = selectedSs ? employees.filter((e) => e.SS === selectedSs) : employees;
+  let scopedEmployees = selectedSs ? employees.filter((e) => e.SS === selectedSs) : employees;
+  const employeeOptions = scopedEmployees
+    .map((e) => ({ code: normCode(e["Mã nhân viên"]), name: e["Tên nhân viên"] ?? e["Mã nhân viên"] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (selectedNv) {
+    scopedEmployees = scopedEmployees.filter((e) => normCode(e["Mã nhân viên"]) === selectedNv);
+  }
 
   const groups = scopedEmployees.map((e) => ({
     code: normCode(e["Mã nhân viên"]),
@@ -464,6 +471,7 @@ export default async function KpiPage({
         actions={
           <>
             {ssList.length > 0 && <SsFilter ssList={ssList} />}
+            {employeeOptions.length > 0 && <NvFilter employees={employeeOptions} />}
             {months.length > 0 && selectedMonth && (
               <MonthSelector months={months} selected={selectedMonth} />
             )}
