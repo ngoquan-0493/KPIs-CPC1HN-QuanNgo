@@ -1,0 +1,436 @@
+"use server";
+
+import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee } from "@/lib/current-employee";
+import { revalidatePath } from "next/cache";
+import { layCauHinhChiTieu } from "@/lib/kpi-chi-tieu";
+
+// Chuan hoa ma NV (co/khong so 0 dau) - dung chung voi cac trang khac
+// (sales/kpi/customers).
+function normCode(code: string | null | undefined) {
+  return (code ?? "").replace(/\D/g, "").replace(/^0+/, "") || code || "";
+}
+
+// Chan quyen thao tac quan ly (duyet/tu choi/sua dong da duyet) o TANG
+// SERVER, khong dua hoan toan vao RLS - cung pattern voi ai-review/actions.ts.
+async function assertQuanLy(): Promise<void> {
+  const employee = await getCurrentEmployee();
+  const viTri = employee?.["Vị trí"];
+  if (viTri !== "SS" && viTri !== "ASM") {
+    throw new Error("Chỉ SS/ASM mới có quyền thực hiện thao tác này.");
+  }
+}
+
+// Xac dinh NV se duoc xay dung KPI: mac dinh la chinh nguoi goi. SS/ASM co
+// the xay/sua thay cho 1 NV duoi quyen (giao ma_nhan_vien khac chinh minh) -
+// RLS (scoped insert/update theo visible_employee_codes()) van la lop chan
+// cuoi cung neu buoc kiem tra nay bi bo qua.
+async function xacDinhNvMucTieu(maNhanVienMucTieu?: string) {
+  const employee = await getCurrentEmployee();
+  if (!employee) throw new Error("Không xác định được nhân viên đang đăng nhập.");
+
+  const maChinhMinh = employee["Mã nhân viên"];
+  const target = maNhanVienMucTieu?.trim() || maChinhMinh;
+  const laTaoThay = normCode(target) !== normCode(maChinhMinh);
+
+  if (laTaoThay && employee["Vị trí"] !== "SS" && employee["Vị trí"] !== "ASM") {
+    throw new Error("Chỉ SS/ASM mới có quyền xây dựng KPI thay cho nhân viên khác.");
+  }
+
+  return { maChinhMinh, target, viTri: employee["Vị trí"] };
+}
+
+export type KpiDraftInput = {
+  id?: string;
+  maNhanVien: string;
+  thangDanhGia: string; // "YYYY-MM-01"
+  chiTieu: string;
+  maKhach?: string | null;
+  tenKhach?: string | null; // chi de hien thi, khong luu rieng cot
+  sanPham?: string | null; // ten san pham chuan hoa (Mo moi*/Duy tri*), hoac null
+  soTienKeHoach?: number | null; // Doanh so*
+  soLuongKhachHangKeHoach?: number | null;
+  sanLuongKeHoachToiThieu?: number | null;
+  diemKpisKeHoach: number;
+  ghiChu?: string | null;
+};
+
+// Ep du lieu tho tu form thanh dung cot Supabase theo nhom chi_tieu - validate
+// day du de tranh ghi du lieu khong khop voi cach 09a doi chieu (vi du thieu
+// san pham cho "Duy trì SPTT" se khien 09a khong bao gio tinh duoc dong nay).
+function chuanHoaDauVao(input: KpiDraftInput) {
+  const cauHinh = layCauHinhChiTieu(input.chiTieu);
+  if (!cauHinh) throw new Error(`Chỉ tiêu không hợp lệ: ${input.chiTieu}`);
+
+  if (!/^\d{4}-\d{2}-01$/.test(input.thangDanhGia)) {
+    throw new Error("Tháng đánh giá không hợp lệ.");
+  }
+  if (!Number.isFinite(input.diemKpisKeHoach) || input.diemKpisKeHoach < 0) {
+    throw new Error("Điểm KPI kế hoạch phải là số không âm.");
+  }
+
+  const row: Record<string, unknown> = {
+    ma_nhan_vien: input.maNhanVien,
+    thang_danh_gia: input.thangDanhGia,
+    chi_tieu: input.chiTieu,
+    diem_kpis_ke_hoach: input.diemKpisKeHoach,
+    diem_kpis: null,
+    so_luong_thuc_hien: null,
+    ti_trong_thuc_hien_ke_hoach: null,
+    ket_qua: null,
+    ghi_chu: input.ghiChu?.trim() || null,
+  };
+
+  if (cauHinh.nhom === "doanh_so") {
+    const soTien = input.soTienKeHoach;
+    if (!Number.isFinite(soTien) || (soTien ?? 0) <= 0) {
+      throw new Error("Cần nhập số tiền kế hoạch lớn hơn 0.");
+    }
+    row.chi_tiet_ke_hoach_san_pham = String(Math.round(soTien as number));
+    row.ma_khach = null;
+    return row;
+  }
+
+  if (cauHinh.canSanPham) {
+    if (!input.sanPham?.trim()) throw new Error("Cần chọn sản phẩm từ danh sách.");
+    row.chi_tiet_ke_hoach_san_pham = input.sanPham.trim();
+  } else {
+    row.chi_tiet_ke_hoach_san_pham = cauHinh.ghiChuMacDinh ?? null;
+  }
+
+  if (cauHinh.canKhachHang) {
+    if (!input.maKhach?.trim()) throw new Error("Cần chọn khách hàng từ danh sách.");
+    row.ma_khach = input.maKhach.trim();
+  } else {
+    row.ma_khach = null;
+  }
+
+  if (cauHinh.canSoLuongKhach) {
+    if (!Number.isFinite(input.soLuongKhachHangKeHoach) || (input.soLuongKhachHangKeHoach ?? 0) <= 0) {
+      throw new Error("Cần nhập số lượng khách hàng kế hoạch lớn hơn 0.");
+    }
+    row.so_luong_khach_hang_ke_hoach = input.soLuongKhachHangKeHoach;
+  } else {
+    row.so_luong_khach_hang_ke_hoach = null;
+  }
+
+  if (cauHinh.canSanLuongToiThieu) {
+    if (
+      !Number.isFinite(input.sanLuongKeHoachToiThieu) ||
+      (input.sanLuongKeHoachToiThieu ?? 0) <= 0
+    ) {
+      throw new Error("Cần nhập sản lượng kế hoạch tối thiểu lớn hơn 0.");
+    }
+    row.san_luong_ke_hoach_toi_thieu = input.sanLuongKeHoachToiThieu;
+  } else {
+    row.san_luong_ke_hoach_toi_thieu = null;
+  }
+
+  return row;
+}
+
+// Tao 1 dong KPI moi o trang thai "nhap" cho NV muc tieu + thang dang chon.
+export async function taoDongKpiNhap(input: KpiDraftInput) {
+  const { target, maChinhMinh } = await xacDinhNvMucTieu(input.maNhanVien);
+  const row = chuanHoaDauVao({ ...input, maNhanVien: target });
+  const supabase = await createClient();
+
+  const { error } = await supabase.from("Chi tieu KPIs").insert({
+    ...row,
+    trang_thai_duyet: "nhap",
+    nguoi_tao: maChinhMinh,
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// Sua 1 dong dang "nhap"/"tu_choi" cua chinh minh (hoac cua NV duoi quyen
+// neu la SS/ASM). Dong da "cho_duyet"/"da_duyet" bi trigger chan sua neu
+// nguoi goi khong phai SS/ASM - xem chi_tieu_kpis_before_update() migration.
+export async function capNhatDongKpiNhap(id: string, input: KpiDraftInput) {
+  const { target } = await xacDinhNvMucTieu(input.maNhanVien);
+  const row = chuanHoaDauVao({ ...input, maNhanVien: target });
+  const supabase = await createClient();
+
+  const { error } = await supabase.from("Chi tieu KPIs").update(row).eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// Xoa 1 dong con "nhap" (RLS "scoped delete draft" chi cho xoa dong nhap).
+export async function xoaDongKpiNhap(id: string) {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .delete()
+    .eq("id", id)
+    .eq("trang_thai_duyet", "nhap");
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// Gui 1 dong (nhap/tu_choi) len "cho_duyet" - trigger tu dong ghi
+// ngay_gui_duyet.
+export async function guiDuyet(id: string) {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "cho_duyet" })
+    .eq("id", id)
+    .in("trang_thai_duyet", ["nhap", "tu_choi"])
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Không tìm thấy dòng này ở trạng thái có thể gửi duyệt.");
+
+  revalidatePath("/kpi");
+}
+
+// Gui hang loat tat ca dong "nhap" cua 1 NV trong 1 thang - dung cho nut
+// "Gui duyet tat ca" o trang xay dung.
+export async function guiDuyetTatCa(maNhanVien: string, thangDanhGia: string) {
+  const { target } = await xacDinhNvMucTieu(maNhanVien);
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "cho_duyet" })
+    .eq("ma_nhan_vien", target)
+    .eq("thang_danh_gia", thangDanhGia)
+    .in("trang_thai_duyet", ["nhap", "tu_choi"]);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// Ap dung 1 nguong hoan thanh nhom (so_luong_toi_thieu_can_dat) cho TAT CA
+// cac dong cung (NV, chi_tieu, thang) - day la gia tri cap NHOM (xac nhan
+// bang du lieu thuc te luon giong nhau tren moi dong cung nhom), khong nhap
+// rieng tung dong san pham/khach hang.
+export async function datNguongNhom(
+  maNhanVien: string,
+  chiTieu: string,
+  thangDanhGia: string,
+  nguong: number,
+) {
+  const { target } = await xacDinhNvMucTieu(maNhanVien);
+  if (!Number.isFinite(nguong) || nguong <= 0) {
+    throw new Error("Ngưỡng hoàn thành nhóm phải là số lớn hơn 0.");
+  }
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ so_luong_toi_thieu_can_dat: nguong })
+    .eq("ma_nhan_vien", target)
+    .eq("chi_tieu", chiTieu)
+    .eq("thang_danh_gia", thangDanhGia);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// ==================== Phe duyet (SS/ASM) ====================
+
+export async function duyetDongKpi(id: string) {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "da_duyet", ghi_chu_duyet: null })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+export async function duyetHangLoatChoNv(maNhanVien: string, thangDanhGia: string) {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "da_duyet", ghi_chu_duyet: null })
+    .eq("ma_nhan_vien", maNhanVien)
+    .eq("thang_danh_gia", thangDanhGia)
+    .eq("trang_thai_duyet", "cho_duyet");
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+export async function tuChoiDongKpi(id: string, lyDo: string) {
+  await assertQuanLy();
+  const trimmed = lyDo.trim();
+  if (!trimmed) throw new Error("Cần nhập lý do trước khi từ chối.");
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "tu_choi", ghi_chu_duyet: trimmed })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// SS/ASM sua truc tiep 1 dong (bat ky trang thai nao, ke ca da duyet) roi
+// duyet luon trong 1 buoc - dung khi SS thay so lieu NV nhap chua hop ly va
+// muon chinh lai thay vi tu choi/cho NV sua lai.
+export async function suaVaDuyetDongKpi(id: string, input: KpiDraftInput) {
+  await assertQuanLy();
+  const { target } = await xacDinhNvMucTieu(input.maNhanVien);
+  const row = chuanHoaDauVao({ ...input, maNhanVien: target });
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ ...row, trang_thai_duyet: "da_duyet", ghi_chu_duyet: null })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// Dua 1 dong DA DUYET tro lai "nhap" (SS/ASM mo lai cho NV sua khi phat hien
+// van de sau khi da duyet).
+export async function moLaiDongKpi(id: string) {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("Chi tieu KPIs")
+    .update({ trang_thai_duyet: "nhap", ghi_chu_duyet: null })
+    .eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+// ==================== Tim kiem danh sach tong (khong gioi han theo NV) ====================
+
+export type KetQuaTimKhach = { ma_khach: string; ten_khach: string | null };
+
+// Danh sach khach hang de chon lam muc tieu "Duy tri*" - lay tu TOAN BO
+// khach_hang_master (khong loc theo NV phu trach), dung nhu yeu cau: "khách
+// hàng này lấy từ danh sách tổng, không bắt buộc phải là từng gán với nhân
+// viên đó mới chọn được". RLS cua khach_hang_master van gioi han theo pham vi
+// nhin thay cua nguoi dang dang nhap (NV/SS/ASM), khong phai gioi han theo
+// "ai dang phu trach khach nay".
+export async function timKiemKhachHang(q: string): Promise<KetQuaTimKhach[]> {
+  const query = q.trim();
+  if (query.length < 2) return [];
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("khach_hang_master")
+    .select("ma_khach,ten_khach")
+    .or(`ten_khach.ilike.%${query}%,ma_khach.ilike.%${query}%`)
+    .order("ten_khach", { ascending: true })
+    .limit(20);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as KetQuaTimKhach[];
+}
+
+// Danh sach san pham chuan hoa de chon cho "Mo moi*"/"Duy tri*" - tu
+// danh_muc_chuan_hoa_san_pham (danh sach tong, khong gioi han theo NV).
+export async function timKiemSanPham(q: string): Promise<string[]> {
+  const query = q.trim();
+  if (query.length < 2) return [];
+
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("danh_muc_chuan_hoa_san_pham")
+    .select("ten_chuan")
+    .ilike("ten_chuan", `%${query}%`)
+    .not("ten_chuan", "is", null)
+    .limit(100);
+  if (error) throw new Error(error.message);
+
+  const uniq = Array.from(new Set((data ?? []).map((r) => r.ten_chuan as string).filter(Boolean)));
+  uniq.sort((a, b) => a.localeCompare(b));
+  return uniq.slice(0, 20);
+}
+
+// ==================== Doc du lieu theo thang (dung khi doi thang tren client) ====================
+
+export type ChiTieuKpiRow = {
+  id: string;
+  ma_nhan_vien: string;
+  chi_tieu: string;
+  chi_tiet_ke_hoach_san_pham: string | null;
+  ma_khach: string | null;
+  so_luong_khach_hang_ke_hoach: number | null;
+  san_luong_ke_hoach_toi_thieu: number | null;
+  so_luong_toi_thieu_can_dat: number | null;
+  diem_kpis_ke_hoach: number | null;
+  trang_thai_duyet: string;
+  ghi_chu_duyet: string | null;
+  ghi_chu: string | null;
+  nguoi_tao: string | null;
+  thang_danh_gia: string;
+};
+
+export async function layDanhSachKpiTheoThang(
+  maNhanVien: string,
+  thangDanhGia: string,
+): Promise<ChiTieuKpiRow[]> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("Chi tieu KPIs")
+    .select(
+      "id,ma_nhan_vien,chi_tieu,chi_tiet_ke_hoach_san_pham,ma_khach,so_luong_khach_hang_ke_hoach,san_luong_ke_hoach_toi_thieu,so_luong_toi_thieu_can_dat,diem_kpis_ke_hoach,trang_thai_duyet,ghi_chu_duyet,ghi_chu,nguoi_tao,thang_danh_gia",
+    )
+    .eq("ma_nhan_vien", maNhanVien)
+    .eq("thang_danh_gia", thangDanhGia)
+    .order("chi_tieu", { ascending: true });
+  if (error) throw new Error(error.message);
+  return (data ?? []) as ChiTieuKpiRow[];
+}
+
+export type ChoDuyetGroup = {
+  ma_nhan_vien: string;
+  rows: ChiTieuKpiRow[];
+};
+
+// Danh sach cac dong "cho_duyet" trong pham vi nhin thay cua SS/ASM dang
+// dang nhap (RLS scoped read tu lo), gom theo NV, cho thang dang chon.
+export async function layDanhSachChoDuyet(thangDanhGia: string): Promise<ChoDuyetGroup[]> {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("Chi tieu KPIs")
+    .select(
+      "id,ma_nhan_vien,chi_tieu,chi_tiet_ke_hoach_san_pham,ma_khach,so_luong_khach_hang_ke_hoach,san_luong_ke_hoach_toi_thieu,so_luong_toi_thieu_can_dat,diem_kpis_ke_hoach,trang_thai_duyet,ghi_chu_duyet,ghi_chu,nguoi_tao,thang_danh_gia",
+    )
+    .eq("thang_danh_gia", thangDanhGia)
+    .eq("trang_thai_duyet", "cho_duyet")
+    .order("ma_nhan_vien", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? []) as ChiTieuKpiRow[];
+  const byNv = new Map<string, ChiTieuKpiRow[]>();
+  for (const r of rows) {
+    const key = r.ma_nhan_vien;
+    if (!byNv.has(key)) byNv.set(key, []);
+    byNv.get(key)!.push(r);
+  }
+  return Array.from(byNv.entries()).map(([ma_nhan_vien, rows]) => ({ ma_nhan_vien, rows }));
+}
+
+// Ten khach hang cho danh sach dong da co (hien thi "Ten (Ma)" thay vi chi
+// ma) - tra ve map ma_khach -> ten_khach.
+export async function layTenKhachTheoMa(maKhachList: string[]): Promise<Record<string, string>> {
+  const uniq = Array.from(new Set(maKhachList.filter(Boolean)));
+  if (uniq.length === 0) return {};
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("khach_hang_master")
+    .select("ma_khach,ten_khach")
+    .in("ma_khach", uniq);
+  if (error) throw new Error(error.message);
+  const map: Record<string, string> = {};
+  for (const r of (data ?? []) as KetQuaTimKhach[]) {
+    if (r.ten_khach) map[r.ma_khach] = r.ten_khach;
+  }
+  return map;
+}
