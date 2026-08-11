@@ -134,20 +134,33 @@ function chuanHoaDauVao(input: KpiDraftInput) {
   return row;
 }
 
-// Ap dung 1 nguong hoan thanh nhom cho TOAN BO cac dong cung (NV, chi_tieu,
-// thang) - dung sau khi insert/update 1 dong de cac dong SAN CO khac trong
-// cung nhom cung duoc dong bo theo, tranh tinh trang moi dong 1 gia tri khac
-// nhau (thuc te luon phai giong nhau, xem lib/kpi-chi-tieu.ts).
-async function apDungNguongNhom(
+// Ap dung nguong hoan thanh nhom va/hoac diem KPI ke hoach NHOM cho TOAN BO
+// cac dong cung (NV, chi_tieu, thang) - dung sau khi insert/update 1 dong de
+// cac dong san co khac trong cung nhom cung duoc dong bo theo, tranh tinh
+// trang moi dong 1 gia tri khac nhau. Ap dung cho "Duy trì SPTT"/"Duy trì" -
+// 2 chi_tieu duy nhat co canNguongNhom=true VA diem_kpis_ke_hoach la 1 con so
+// TONG cho ca nhom (khong cong don tung dong nhu cac chi_tieu khac) - xem
+// lib/kpi-chi-tieu.ts va cong thuc moi trong workflow n8n "09b Tong Hop Diem
+// KPI" (per_group_adj: diem_thuc_hien_nhom = ke_hoach_nhom/nguong*so_dat).
+async function apDungGiaTriNhom(
   supabase: Awaited<ReturnType<typeof createClient>>,
   maNhanVien: string,
   chiTieu: string,
   thangDanhGia: string,
-  nguong: number,
+  giaTri: { nguong?: number | null; diemKeHoach?: number | null },
 ) {
+  const update: Record<string, number> = {};
+  if (giaTri.nguong != null && Number.isFinite(giaTri.nguong) && giaTri.nguong > 0) {
+    update.so_luong_toi_thieu_can_dat = giaTri.nguong;
+  }
+  if (giaTri.diemKeHoach != null && Number.isFinite(giaTri.diemKeHoach) && giaTri.diemKeHoach >= 0) {
+    update.diem_kpis_ke_hoach = giaTri.diemKeHoach;
+  }
+  if (Object.keys(update).length === 0) return;
+
   const { error } = await supabase
     .from("Chi tieu KPIs")
-    .update({ so_luong_toi_thieu_can_dat: nguong })
+    .update(update)
     .eq("ma_nhan_vien", maNhanVien)
     .eq("chi_tieu", chiTieu)
     .eq("thang_danh_gia", thangDanhGia);
@@ -167,10 +180,15 @@ export async function taoDongKpiNhap(input: KpiDraftInput) {
   });
   if (error) throw new Error(error.message);
 
-  // Neu co nhap nguong nhom cung luc them dong, dong bo ngay cho ca nhom -
-  // tranh phai vao ria the rieng de dat sau khi da them dong.
-  if (input.nguongNhom != null && Number.isFinite(input.nguongNhom) && input.nguongNhom > 0) {
-    await apDungNguongNhom(supabase, target, input.chiTieu, input.thangDanhGia, input.nguongNhom);
+  // Voi "Duy trì SPTT"/"Duy trì": diem_kpis_ke_hoach LA GIA TRI TONG CHO CA
+  // NHOM (khong phai rieng dong nay) - luon dong bo ngay sau khi them dong,
+  // cung voi nguong hoan thanh nhom neu co nhap.
+  const cauHinh = layCauHinhChiTieu(input.chiTieu);
+  if (cauHinh?.canNguongNhom) {
+    await apDungGiaTriNhom(supabase, target, input.chiTieu, input.thangDanhGia, {
+      nguong: input.nguongNhom,
+      diemKeHoach: input.diemKpisKeHoach,
+    });
   }
 
   revalidatePath("/kpi");
@@ -187,8 +205,12 @@ export async function capNhatDongKpiNhap(id: string, input: KpiDraftInput) {
   const { error } = await supabase.from("Chi tieu KPIs").update(row).eq("id", id);
   if (error) throw new Error(error.message);
 
-  if (input.nguongNhom != null && Number.isFinite(input.nguongNhom) && input.nguongNhom > 0) {
-    await apDungNguongNhom(supabase, target, input.chiTieu, input.thangDanhGia, input.nguongNhom);
+  const cauHinh = layCauHinhChiTieu(input.chiTieu);
+  if (cauHinh?.canNguongNhom) {
+    await apDungGiaTriNhom(supabase, target, input.chiTieu, input.thangDanhGia, {
+      nguong: input.nguongNhom,
+      diemKeHoach: input.diemKpisKeHoach,
+    });
   }
 
   revalidatePath("/kpi");
@@ -255,7 +277,7 @@ export async function datNguongNhom(
     throw new Error("Ngưỡng hoàn thành nhóm phải là số lớn hơn 0.");
   }
   const supabase = await createClient();
-  await apDungNguongNhom(supabase, target, chiTieu, thangDanhGia, nguong);
+  await apDungGiaTriNhom(supabase, target, chiTieu, thangDanhGia, { nguong });
 
   revalidatePath("/kpi");
 }
@@ -274,7 +296,42 @@ export async function datNguongNhomChoDuyet(
     throw new Error("Ngưỡng hoàn thành nhóm phải là số lớn hơn 0.");
   }
   const supabase = await createClient();
-  await apDungNguongNhom(supabase, maNhanVien, chiTieu, thangDanhGia, nguong);
+  await apDungGiaTriNhom(supabase, maNhanVien, chiTieu, thangDanhGia, { nguong });
+
+  revalidatePath("/kpi");
+}
+
+// Dat diem KPI ke hoach TONG cho ca nhom "Duy trì SPTT"/"Duy trì" - dung khi
+// muon chinh lai rieng gia tri nay ma khong them/sua dong nao (vd sau khi da
+// co san du lieu tu Google Sheet cu, chua dong bo dung theo quy uoc moi).
+export async function datDiemKeHoachNhom(
+  maNhanVien: string,
+  chiTieu: string,
+  thangDanhGia: string,
+  diemKeHoach: number,
+) {
+  const { target } = await xacDinhNvMucTieu(maNhanVien);
+  if (!Number.isFinite(diemKeHoach) || diemKeHoach < 0) {
+    throw new Error("Điểm KPI kế hoạch phải là số không âm.");
+  }
+  const supabase = await createClient();
+  await apDungGiaTriNhom(supabase, target, chiTieu, thangDanhGia, { diemKeHoach });
+
+  revalidatePath("/kpi");
+}
+
+export async function datDiemKeHoachNhomChoDuyet(
+  maNhanVien: string,
+  chiTieu: string,
+  thangDanhGia: string,
+  diemKeHoach: number,
+) {
+  await assertQuanLy();
+  if (!Number.isFinite(diemKeHoach) || diemKeHoach < 0) {
+    throw new Error("Điểm KPI kế hoạch phải là số không âm.");
+  }
+  const supabase = await createClient();
+  await apDungGiaTriNhom(supabase, maNhanVien, chiTieu, thangDanhGia, { diemKeHoach });
 
   revalidatePath("/kpi");
 }

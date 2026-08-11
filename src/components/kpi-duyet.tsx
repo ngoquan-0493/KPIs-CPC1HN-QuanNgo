@@ -6,6 +6,7 @@ import {
   duyetHangLoatChoNv,
   tuChoiDongKpi,
   datNguongNhomChoDuyet,
+  datDiemKeHoachNhomChoDuyet,
   layDanhSachChoDuyet,
   layTenKhachTheoMa,
   type ChiTieuKpiRow,
@@ -220,6 +221,15 @@ export default function KpiDuyet({
     });
   }
 
+  function handleDatDiemKeHoachNhom(maNhanVien: string, chiTieu: string, diem: string) {
+    const n = Number(diem);
+    if (!Number.isFinite(n) || n < 0) return;
+    startTransition(async () => {
+      await datDiemKeHoachNhomChoDuyet(maNhanVien, chiTieu, thang, n);
+      await taiLai(thang);
+    });
+  }
+
   const tongSoDong = groups.reduce((s, g) => s + g.rows.length, 0);
 
   return (
@@ -288,20 +298,39 @@ export default function KpiDuyet({
                   const rowsCungNhom = g.rows.filter((r) => r.chi_tieu === chiTieu);
                   const nguongHienTai = rowsCungNhom.find((r) => r.so_luong_toi_thieu_can_dat != null)
                     ?.so_luong_toi_thieu_can_dat;
+                  const diemKeHoachNhomHienTai = rowsCungNhom.find((r) => r.diem_kpis_ke_hoach != null)
+                    ?.diem_kpis_ke_hoach;
                   return (
-                    <div key={chiTieu} className="flex items-center gap-1.5 text-xs text-slate-600">
-                      {nguongHienTai == null && <Badge tone="warning">Chưa đặt</Badge>}
-                      <span>{layCauHinhChiTieu(chiTieu)?.nhan ?? chiTieu} — Ngưỡng hoàn thành nhóm:</span>
-                      <input
-                        type="number"
-                        min={0}
-                        defaultValue={nguongHienTai ?? ""}
-                        disabled={isPending}
-                        onBlur={(e) => e.target.value && handleDatNguong(g.ma_nhan_vien, chiTieu, e.target.value)}
-                        className={`w-16 ${inputClass}`}
-                        title={`Số dòng tối thiểu trong nhóm "${chiTieu}" cần đạt để được 100% điểm cả nhóm`}
-                      />
-                      <span className="text-slate-400">/ {rowsCungNhom.length} dòng</span>
+                    <div key={chiTieu} className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                      {(nguongHienTai == null || diemKeHoachNhomHienTai == null) && (
+                        <Badge tone="warning">Chưa đặt đủ ngưỡng/điểm nhóm</Badge>
+                      )}
+                      <span className="font-medium text-slate-700">{layCauHinhChiTieu(chiTieu)?.nhan ?? chiTieu}</span>
+                      <span className="flex items-center gap-1.5">
+                        Ngưỡng hoàn thành nhóm:
+                        <input
+                          type="number"
+                          min={0}
+                          defaultValue={nguongHienTai ?? ""}
+                          disabled={isPending}
+                          onBlur={(e) => e.target.value && handleDatNguong(g.ma_nhan_vien, chiTieu, e.target.value)}
+                          className={`w-16 ${inputClass}`}
+                          title={`Số dòng tối thiểu trong nhóm "${chiTieu}" cần đạt để được 100% điểm cả nhóm`}
+                        />
+                        <span className="text-slate-400">/ {rowsCungNhom.length} dòng</span>
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        Điểm kế hoạch nhóm:
+                        <input
+                          type="number"
+                          min={0}
+                          defaultValue={diemKeHoachNhomHienTai ?? ""}
+                          disabled={isPending}
+                          onBlur={(e) => e.target.value && handleDatDiemKeHoachNhom(g.ma_nhan_vien, chiTieu, e.target.value)}
+                          className={`w-20 ${inputClass}`}
+                          title={`Tổng điểm KPI kế hoạch cho cả nhóm "${chiTieu}" tháng này`}
+                        />
+                      </span>
                     </div>
                   );
                 })}

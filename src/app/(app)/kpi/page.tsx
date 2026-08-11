@@ -144,8 +144,21 @@ function isDat(ketQua: string | null) {
   return k.includes("đạt") && !k.includes("không");
 }
 
-// Tổng kết chung cho "Code mới" và "Mở mới SPTT" — không có khái niệm ngưỡng
-// nhóm như Duy trì SPTT, chỉ cộng dồn số dòng đạt và điểm thực tế/kế hoạch.
+// Gioi han diem thuc hien toi da theo % so voi diem ke hoach - dong bo voi
+// cong thuc trong workflow n8n "09b Tong Hop Diem KPI" (xem per_group_adj).
+// KHONG duoc doi 1 ben ma khong doi ben con lai, hai noi phai luon khop nhau.
+const TRAN_DIEM: Record<string, number> = {
+  "Code mới": 1.5,
+  "Mở mới SPTT": 1.5,
+  "Mở mới": 1.5,
+  "Duy trì SPTT": 1.5,
+  "Duy trì": 1.5,
+  "Doanh số thầu": 1.2,
+  // "Doanh số kê đơn - phòng mạch": khong gioi han (khong co trong bang nay).
+};
+
+// Tổng kết cho "Code mới", "Mở mới SPTT", "Mở mới" — cộng dồn điểm kế hoạch/
+// thực tế từng dòng, GIỚI HẠN điểm thực tế tối đa theo TRAN_DIEM (150%).
 function chiTieuSummary(kpis: KpiRow[], chiTieu: string) {
   const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
   if (rows.length === 0) return null;
@@ -153,7 +166,9 @@ function chiTieuSummary(kpis: KpiRow[], chiTieu: string) {
   const tongSoChiTieu = rows.length;
   const soDat = rows.filter((r) => isDat(r["Kết quả"])).length;
   const tongDiemKeHoach = rows.reduce((s, r) => s + (r["Điểm KPIs kế hoạch"] ?? 0), 0);
-  const tongDiemThucTe = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
+  const tongDiemThucTeRaw = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
+  const tran = TRAN_DIEM[chiTieu];
+  const tongDiemThucTe = tran != null ? Math.min(tongDiemThucTeRaw, tongDiemKeHoach * tran) : tongDiemThucTeRaw;
 
   return { tongSoChiTieu, soDat, tongDiemKeHoach, tongDiemThucTe };
 }
@@ -161,6 +176,8 @@ function chiTieuSummary(kpis: KpiRow[], chiTieu: string) {
 // Tổng kết cho 2 chỉ tiêu doanh số (Doanh số kê đơn - phòng mạch / Doanh số
 // thầu) — kế hoạch đọc từ "Chi tiết Kế hoạch/sản phẩm" (nhập số tiền trực
 // tiếp), thực hiện/điểm lấy từ "Số lượng thực hiện"/"Điểm KPIs" đã tính.
+// Doanh số thầu giới hạn điểm thực tế tối đa 120% (TRAN_DIEM), Doanh số kê
+// đơn - phòng mạch không giới hạn.
 function doanhSoSummary(kpis: KpiRow[], chiTieu: string) {
   const row = kpis.find((k) => k["Chỉ tiêu"] === chiTieu);
   if (!row) return null;
@@ -168,22 +185,21 @@ function doanhSoSummary(kpis: KpiRow[], chiTieu: string) {
   const keHoach = Number(row["Chi tiết Kế hoạch/sản phẩm"]) || 0;
   const thucHien = row["Số lượng thực hiện"] ?? 0;
   const diemKeHoach = row["Điểm KPIs kế hoạch"] ?? 0;
-  const diemThucTe = row["Điểm KPIs"] ?? 0;
+  const tran = TRAN_DIEM[chiTieu];
+  const diemThucTe = tran != null ? Math.min(row["Điểm KPIs"] ?? 0, diemKeHoach * tran) : (row["Điểm KPIs"] ?? 0);
 
   return { keHoach, thucHien, diemKeHoach, diemThucTe, dat: isDat(row["Kết quả"]) };
 }
 
-// "Duy trì SPTT" / "Duy trì" / "Mở mới" đều chỉ cần đạt đủ ngưỡng tối thiểu
-// trong tổng số chỉ tiêu được giao (ví dụ 3/5) để được ghi nhận hoàn thành
-// 100% điểm của cả nhóm, thay vì cộng dồn tỉ lệ từng dòng. Ngưỡng và điểm kế
-// hoạch tối đa của mỗi dòng đến từ Google Sheet và không bị ghi đè bởi tác vụ
-// tính KPI hàng ngày. Dùng chung 1 hàm cho cả 3 chỉ tiêu vì cùng cấu trúc
-// ngưỡng nhóm ("Số lượng tối thiểu cần đạt"). Riêng "Code mới" và "Mở mới
-// SPTT" không dùng ngưỡng nhóm nên vẫn tính bằng chiTieuSummary.
-function nguongNhomSummary(
-  kpis: KpiRow[],
-  chiTieu: "Duy trì SPTT" | "Duy trì" | "Mở mới",
-) {
+// "Duy trì SPTT" / "Duy trì": Điểm KPIs kế hoạch là 1 con số TỔNG cho cả
+// nhóm (giống nhau trên mọi dòng, không cộng dồn/sum như trước). Điểm thực
+// hiện = (điểm kế hoạch nhóm / ngưỡng hoàn thành nhóm) * số chỉ tiêu đạt
+// được, giới hạn tối đa 150% điểm kế hoạch nhóm (TRAN_DIEM) - đồng bộ với
+// công thức trong workflow n8n "09b Tong Hop Diem KPI" (per_group_adj). Nếu
+// CHƯA đặt ngưỡng hoàn thành nhóm: tạm fallback về cộng dồn điểm thô từng
+// dòng, không giới hạn (UI trang xây dựng/duyệt đã cảnh báo "Chưa đặt
+// ngưỡng" để nhắc bổ sung).
+function nguongNhomSummary(kpis: KpiRow[], chiTieu: "Duy trì SPTT" | "Duy trì") {
   const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
   if (rows.length === 0) return null;
 
@@ -192,17 +208,24 @@ function nguongNhomSummary(
   const nguong = rows.find((r) => r["Số lượng tối thiểu cần đạt"] != null)?.[
     "Số lượng tối thiểu cần đạt"
   ] ?? null;
-  const tongDiemKeHoach = rows.reduce((s, r) => s + (r["Điểm KPIs kế hoạch"] ?? 0), 0);
-  const tongDiemThucTe = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
+  // Diem ke hoach NHOM la 1 gia tri duy nhat (giong nhau moi dong) - lay gia
+  // tri lon nhat tim thay thay vi cong don, khac voi chiTieuSummary o tren.
+  const diemKeHoachNhom = rows.reduce((max, r) => Math.max(max, r["Điểm KPIs kế hoạch"] ?? 0), 0);
+  const tongDiemThucTeRaw = rows.reduce((s, r) => s + (r["Điểm KPIs"] ?? 0), 0);
   const hoanThanh = nguong != null && soDat >= nguong;
+
+  const diemTong =
+    nguong != null && nguong > 0
+      ? Math.min((diemKeHoachNhom / nguong) * soDat, diemKeHoachNhom * TRAN_DIEM[chiTieu])
+      : tongDiemThucTeRaw;
 
   return {
     tongSoChiTieu,
     soDat,
     nguong,
     hoanThanh,
-    diemTong: hoanThanh ? tongDiemKeHoach : tongDiemThucTe,
-    tongDiemKeHoach,
+    diemTong,
+    tongDiemKeHoach: diemKeHoachNhom,
   };
 }
 
@@ -548,7 +571,7 @@ export default async function KpiPage({
         {groups.map(({ code, name, kpis, soCall, soKhach, focus }) => {
           const codeMoi = chiTieuSummary(kpis, "Code mới");
           const moiMoiSptt = chiTieuSummary(kpis, "Mở mới SPTT");
-          const moiMoi = nguongNhomSummary(kpis, "Mở mới");
+          const moiMoi = chiTieuSummary(kpis, "Mở mới");
           const duyTriSptt = nguongNhomSummary(kpis, "Duy trì SPTT");
           const duyTri = nguongNhomSummary(kpis, "Duy trì");
           const doanhSoKeDonPMKpi = doanhSoSummary(kpis, "Doanh số kê đơn - phòng mạch");
@@ -671,22 +694,16 @@ export default async function KpiPage({
                         <td className="py-1.5 pr-3 text-slate-900">Mở mới</td>
                         <td className="py-1.5 pr-3 text-slate-700">
                           {moiMoi.soDat}/{moiMoi.tongSoChiTieu} chỉ tiêu đạt
-                          {moiMoi.nguong != null && ` (ngưỡng: ${moiMoi.nguong})`}
-                          {moiMoi.hoanThanh && (
-                            <span className="ml-1 font-semibold text-emerald-700">
-                              Hoàn thành 100%
-                            </span>
-                          )}
                         </td>
                         <td className="py-1.5">
                           <span
                             className={`rounded-full px-2 py-0.5 font-medium ${
-                              moiMoi.hoanThanh
+                              moiMoi.soDat === moiMoi.tongSoChiTieu
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-slate-100 text-slate-600"
                             }`}
                           >
-                            {moiMoi.diemTong}/{moiMoi.tongDiemKeHoach}
+                            {moiMoi.tongDiemThucTe}/{moiMoi.tongDiemKeHoach}
                           </span>
                         </td>
                       </tr>
