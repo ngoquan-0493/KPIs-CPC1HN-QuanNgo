@@ -29,8 +29,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const employeeName = employee["Tên nhân viên"] ?? "Người dùng";
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur-sm">
+    <div className="flex min-h-screen flex-col lg:flex-row">
+      {/* Sidebar desktop - an hoan toan tren man hinh nho hon lg (dien thoai/
+          tablet doc), thay bang top bar + bottom nav ben duoi. */}
+      <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-slate-200/80 bg-white/90 backdrop-blur-sm lg:flex">
         <div className="flex items-center gap-2.5 px-5 py-5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-blue-800 to-blue-600 text-white shadow-sm">
             <IconSparkles className="h-5 w-5" />
@@ -54,7 +56,27 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <SignOutButton />
         </div>
       </aside>
-      <main className="min-w-0 flex-1 overflow-x-hidden">{children}</main>
+
+      {/* Top bar dien thoai - thay the phan header/avatar cua sidebar khi
+          sidebar bi an. */}
+      <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-slate-200/80 bg-white/90 px-4 py-3 backdrop-blur-sm lg:hidden">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-800 to-blue-600 text-white shadow-sm">
+            <IconSparkles className="h-4 w-4" />
+          </span>
+          <p className="truncate text-sm font-semibold text-slate-900">Bán hàng &amp; KPI</p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Avatar name={employeeName} className="h-8 w-8" />
+          <SignOutButton compact />
+        </div>
+      </header>
+
+      {/* pb-20: chua khong gian cho bottom nav co dinh tren dien thoai, tranh
+          che noi dung cuoi trang. */}
+      <main className="min-w-0 flex-1 overflow-x-hidden pb-20 lg:pb-0">{children}</main>
+
+      <NavLinks viTri={employee["Vị trí"]} variant="bottom" />
     </div>
   );
 }

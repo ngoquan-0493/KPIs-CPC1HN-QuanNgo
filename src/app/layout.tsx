@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Be_Vietnam_Pro } from "next/font/google";
 import "./globals.css";
 
@@ -11,6 +11,13 @@ const beVietnamPro = Be_Vietnam_Pro({
 export const metadata: Metadata = {
   title: "Theo dõi Bán hàng & KPI",
   description: "Hệ thống theo dõi bán hàng, KPI và quản lý đội nhóm",
+};
+
+// Dam bao trinh duyet dien thoai render dung ty le man hinh thuc te (khong
+// zoom-out gia lap desktop) - can cho giao dien responsive o (app)/layout.tsx.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({

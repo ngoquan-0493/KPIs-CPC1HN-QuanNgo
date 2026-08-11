@@ -13,11 +13,46 @@ const NAV = [
   { href: "/team", label: "Đội nhóm", icon: IconUsers },
 ];
 
-export default function NavLinks({ viTri }: { viTri?: string | null }) {
+export default function NavLinks({
+  viTri,
+  variant = "sidebar",
+}: {
+  viTri?: string | null;
+  variant?: "sidebar" | "bottom";
+}) {
   const pathname = usePathname();
   // NVKD chi xem du lieu ca nhan (RLS da gioi han) - trang "Doi nhom" hien
   // ca cay to chuc nen khong phu hop, an di cho gon.
   const items = viTri === "NVKD" ? NAV.filter((item) => item.href !== "/team") : NAV;
+
+  // Thanh dieu huong duoi cung cho dien thoai (thay the sidebar bi an o
+  // (app)/layout.tsx khi man hinh nho hon lg). Dung grid chia deu theo so
+  // muc (5 hoac 6 tuy vi tri) thay vi flex de tranh muc bi lech do do dai chu.
+  if (variant === "bottom") {
+    return (
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 grid border-t border-slate-200 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm lg:hidden"
+        style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}
+      >
+        {items.map((item) => {
+          const active = pathname.startsWith(item.href);
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex min-w-0 flex-col items-center justify-center gap-0.5 py-2 text-[10px] font-medium ${
+                active ? "text-blue-700" : "text-slate-500"
+              }`}
+            >
+              <Icon className={`h-5 w-5 shrink-0 ${active ? "text-blue-700" : "text-slate-400"}`} />
+              <span className="max-w-full truncate leading-none">{item.label}</span>
+            </Link>
+          );
+        })}
+      </nav>
+    );
+  }
 
   return (
     <nav className="flex-1 space-y-1 px-3 py-2">
