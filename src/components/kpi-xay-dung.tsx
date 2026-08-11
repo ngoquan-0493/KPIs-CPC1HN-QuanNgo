@@ -60,6 +60,7 @@ type FormState = {
   tenKhach: string;
   soLuongKhachHangKeHoach: string;
   sanLuongKeHoachToiThieu: string;
+  nguongNhom: string;
   soTienKeHoach: string;
   diemKpisKeHoach: string;
   ghiChu: string;
@@ -72,6 +73,7 @@ const FORM_RONG: FormState = {
   tenKhach: "",
   soLuongKhachHangKeHoach: "",
   sanLuongKeHoachToiThieu: "",
+  nguongNhom: "",
   soTienKeHoach: "",
   diemKpisKeHoach: "",
   ghiChu: "",
@@ -87,6 +89,7 @@ function rowToForm(row: ChiTieuKpiRow, tenKhach: string | null): FormState {
     tenKhach: tenKhach ?? "",
     soLuongKhachHangKeHoach: row.so_luong_khach_hang_ke_hoach?.toString() ?? "",
     sanLuongKeHoachToiThieu: row.san_luong_ke_hoach_toi_thieu?.toString() ?? "",
+    nguongNhom: row.so_luong_toi_thieu_can_dat?.toString() ?? "",
     soTienKeHoach: isDoanhSo ? row.chi_tiet_ke_hoach_san_pham ?? "" : "",
     diemKpisKeHoach: row.diem_kpis_ke_hoach?.toString() ?? "",
     ghiChu: row.ghi_chu ?? "",
@@ -103,6 +106,7 @@ function formToInput(maNhanVien: string, thangDanhGia: string, f: FormState) {
     soTienKeHoach: f.soTienKeHoach ? Number(f.soTienKeHoach) : null,
     soLuongKhachHangKeHoach: f.soLuongKhachHangKeHoach ? Number(f.soLuongKhachHangKeHoach) : null,
     sanLuongKeHoachToiThieu: f.sanLuongKeHoachToiThieu ? Number(f.sanLuongKeHoachToiThieu) : null,
+    nguongNhom: f.nguongNhom ? Number(f.nguongNhom) : null,
     diemKpisKeHoach: Number(f.diemKpisKeHoach || 0),
     ghiChu: f.ghiChu || null,
   };
@@ -114,10 +118,15 @@ function KpiRowForm({
   form,
   setForm,
   disabled,
+  nguongNhomTheoChiTieu,
 }: {
   form: FormState;
   setForm: (f: FormState) => void;
   disabled?: boolean;
+  // Nguong hoan thanh nhom hien co cua tung chi_tieu (tu cac dong da ton
+  // tai) - dung de tu dien san khi doi chi_tieu, tranh NV go lai hoac ghi de
+  // nham gia tri khac cho cung 1 nhom.
+  nguongNhomTheoChiTieu?: Record<string, number | undefined>;
 }) {
   const cauHinh = layCauHinhChiTieu(form.chiTieu);
 
@@ -126,7 +135,15 @@ function KpiRowForm({
       <select
         value={form.chiTieu}
         disabled={disabled}
-        onChange={(e) => setForm({ ...FORM_RONG, chiTieu: e.target.value })}
+        onChange={(e) => {
+          const chiTieuMoi = e.target.value;
+          const nguongCoSan = nguongNhomTheoChiTieu?.[chiTieuMoi];
+          setForm({
+            ...FORM_RONG,
+            chiTieu: chiTieuMoi,
+            nguongNhom: nguongCoSan != null ? String(nguongCoSan) : "",
+          });
+        }}
         className={inputClass}
       >
         {DANH_SACH_CHI_TIEU.map((ct) => (
@@ -186,6 +203,24 @@ function KpiRowForm({
           placeholder="Sản lượng kế hoạch tối thiểu"
           className={inputClass}
         />
+      )}
+
+      {cauHinh?.canNguongNhom && (
+        <div className="sm:col-span-2 lg:col-span-1">
+          <input
+            type="number"
+            min={0}
+            value={form.nguongNhom}
+            disabled={disabled}
+            onChange={(e) => setForm({ ...form, nguongNhom: e.target.value })}
+            placeholder="Ngưỡng hoàn thành nhóm (vd: 3)"
+            className={`w-full ${inputClass}`}
+          />
+          <p className="mt-0.5 text-[10px] text-slate-400">
+            Số dòng tối thiểu trong nhóm &quot;{cauHinh.nhan}&quot; cần đạt để được 100% điểm cả
+            nhóm tháng này — áp dụng chung cho mọi dòng cùng nhóm, không phải riêng dòng này.
+          </p>
+        </div>
       )}
 
       {cauHinh?.nhom === "doanh_so" && (
@@ -323,6 +358,14 @@ export default function KpiXayDung({
     return map;
   }, [rows]);
 
+  const nguongNhomTheoChiTieu = useMemo(() => {
+    const map: Record<string, number | undefined> = {};
+    for (const [chiTieu, chiTieuRows] of rowsByChiTieu) {
+      map[chiTieu] = chiTieuRows.find((r) => r.so_luong_toi_thieu_can_dat != null)?.so_luong_toi_thieu_can_dat ?? undefined;
+    }
+    return map;
+  }, [rowsByChiTieu]);
+
   const soDongNhap = rows.filter((r) => r.trang_thai_duyet === "nhap").length;
 
   function handleThemMoi() {
@@ -451,7 +494,7 @@ export default function KpiXayDung({
 
       <Card padding="p-4" className="mb-6">
         <SectionHeading title="Thêm chỉ tiêu mới" />
-        <KpiRowForm form={form} setForm={setForm} disabled={isPending} />
+        <KpiRowForm form={form} setForm={setForm} disabled={isPending} nguongNhomTheoChiTieu={nguongNhomTheoChiTieu} />
         {errorMsg && <p className="mt-2 text-xs text-red-600">{errorMsg}</p>}
         <div className="mt-3">
           <button
@@ -481,6 +524,9 @@ export default function KpiXayDung({
                 <h3 className="text-sm font-semibold text-slate-900">{cauHinh?.nhan ?? chiTieu}</h3>
                 {cauHinh?.canNguongNhom && (
                   <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                    {nguongHienTai == null && (
+                      <Badge tone="warning">Chưa đặt ngưỡng hoàn thành nhóm</Badge>
+                    )}
                     Ngưỡng hoàn thành nhóm:
                     <input
                       type="number"
@@ -514,7 +560,7 @@ export default function KpiXayDung({
                         <tr key={row.id} className="border-b border-slate-100 align-top last:border-0">
                           {dangSua ? (
                             <td colSpan={5} className="py-2">
-                              <KpiRowForm form={form} setForm={setForm} disabled={isPending} />
+                              <KpiRowForm form={form} setForm={setForm} disabled={isPending} nguongNhomTheoChiTieu={nguongNhomTheoChiTieu} />
                               {errorMsg && <p className="mt-2 text-xs text-red-600">{errorMsg}</p>}
                               <div className="mt-2 flex gap-2">
                                 <button
