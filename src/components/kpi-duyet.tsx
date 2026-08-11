@@ -5,6 +5,7 @@ import {
   duyetDongKpi,
   duyetHangLoatChoNv,
   tuChoiDongKpi,
+  datNguongNhomChoDuyet,
   layDanhSachChoDuyet,
   layTenKhachTheoMa,
   type ChiTieuKpiRow,
@@ -210,6 +211,15 @@ export default function KpiDuyet({
     });
   }
 
+  function handleDatNguong(maNhanVien: string, chiTieu: string, nguong: string) {
+    const n = Number(nguong);
+    if (!Number.isFinite(n) || n <= 0) return;
+    startTransition(async () => {
+      await datNguongNhomChoDuyet(maNhanVien, chiTieu, thang, n);
+      await taiLai(thang);
+    });
+  }
+
   const tongSoDong = groups.reduce((s, g) => s + g.rows.length, 0);
 
   return (
@@ -260,6 +270,43 @@ export default function KpiDuyet({
                 </button>
               </div>
             </div>
+            {Array.from(
+              new Set(
+                g.rows
+                  .filter((r) => layCauHinhChiTieu(r.chi_tieu)?.canNguongNhom)
+                  .map((r) => r.chi_tieu),
+              ),
+            ).length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-3 rounded-xl bg-slate-50 p-2.5">
+                {Array.from(
+                  new Set(
+                    g.rows
+                      .filter((r) => layCauHinhChiTieu(r.chi_tieu)?.canNguongNhom)
+                      .map((r) => r.chi_tieu),
+                  ),
+                ).map((chiTieu) => {
+                  const rowsCungNhom = g.rows.filter((r) => r.chi_tieu === chiTieu);
+                  const nguongHienTai = rowsCungNhom.find((r) => r.so_luong_toi_thieu_can_dat != null)
+                    ?.so_luong_toi_thieu_can_dat;
+                  return (
+                    <div key={chiTieu} className="flex items-center gap-1.5 text-xs text-slate-600">
+                      {nguongHienTai == null && <Badge tone="warning">Chưa đặt</Badge>}
+                      <span>{layCauHinhChiTieu(chiTieu)?.nhan ?? chiTieu} — Ngưỡng hoàn thành nhóm:</span>
+                      <input
+                        type="number"
+                        min={0}
+                        defaultValue={nguongHienTai ?? ""}
+                        disabled={isPending}
+                        onBlur={(e) => e.target.value && handleDatNguong(g.ma_nhan_vien, chiTieu, e.target.value)}
+                        className={`w-16 ${inputClass}`}
+                        title={`Số dòng tối thiểu trong nhóm "${chiTieu}" cần đạt để được 100% điểm cả nhóm`}
+                      />
+                      <span className="text-slate-400">/ {rowsCungNhom.length} dòng</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="data-table w-full text-left text-xs">
                 <thead>
