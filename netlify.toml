@@ -5,6 +5,10 @@
 [build.environment]
   NODE_VERSION = "20"
 
-# Next.js Runtime cua Netlify (plugin @netlify/plugin-nextjs) tu dong duoc
-# ap dung khi Netlify phat hien day la du an Next.js - khong can khai bao
-# them plugin thu cong o day.
+# Ghim phien ban @netlify/plugin-nextjs ve 5.15.12 (thay vi de Netlify tu
+# dong lay ban moi nhat) vi ban 5.15.13 co bug bundling function bi thieu
+# file "handlers/request-context.cjs", khien function server crash sau khi
+# deploy (khong lien quan Next.js 15 hay 16, ca hai deu bi loi giong nhau
+# voi 5.15.13). Xem: https://docs.netlify.com/frameworks/next-js/overview/#reverting-to-an-older-adapter-version
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
