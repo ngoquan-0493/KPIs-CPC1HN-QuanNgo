@@ -14,7 +14,7 @@ import KpiXayDung from "@/components/kpi-xay-dung";
 import KpiDuyet from "@/components/kpi-duyet";
 import {
   layDanhSachKpiTheoThang,
-  layDanhSachChoDuyet,
+  layTatCaKpiTheoThang,
   layTenKhachTheoMa,
 } from "./build-actions";
 
@@ -973,7 +973,7 @@ async function KpiDuyetLoader({
   thangMacDinh: string;
   danhSachNv: { code: string; name: string }[];
 }) {
-  const groups = await layDanhSachChoDuyet(thangMacDinh);
+  const groups = await layTatCaKpiTheoThang(thangMacDinh);
   const maKhachList = groups.flatMap((g) => g.rows.map((r) => r.ma_khach)).filter((v): v is string => !!v);
   const tenKhach = maKhachList.length > 0 ? await layTenKhachTheoMa(maKhachList) : {};
   const tenNhanVienMap: Record<string, string> = {};

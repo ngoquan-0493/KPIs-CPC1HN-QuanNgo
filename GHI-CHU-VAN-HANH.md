@@ -1,4 +1,4 @@
-# Ghi chú vận hành (cập nhật gần nhất: 2026-08-11)
+# Ghi chú vận hành (cập nhật gần nhất: 2026-08-12)
 
 Tài liệu này ghi lại các lỗi đã phát hiện/sửa và các việc còn tồn đọng liên quan
 đến pipeline dữ liệu (Supabase + n8n) của saleskpi-web, để phiên làm việc sau
@@ -340,3 +340,52 @@ mỗi lệnh git cần chạy từ Cowork. Ngoài ra `git push` **không thể c
 Cowork** vì sandbox không có thông tin đăng nhập GitHub của user (tách biệt
 hoàn toàn khỏi Windows/GitHub Desktop) - luôn cần user tự push bằng GitHub
 Desktop hoặc terminal trên máy họ sau khi Cowork đã commit xong ở local.
+
+## 9. Đã xong: Hoàn thiện mục "Phê duyệt" KPI (nhánh feature/xay-dung-duyet-kpi)
+
+**Bối cảnh:** nhánh `feature/xay-dung-duyet-kpi` (remote, chưa merge) đã có sẵn
+2 tab mới trong `/kpi`: "Xây dựng KPI tháng" (NV tự nhập chỉ tiêu nháp, gửi
+duyệt) và "Phê duyệt" (SS/ASM duyệt/từ chối). User yêu cầu bổ sung cho tab
+Phê duyệt: (1) hiển thị nhóm theo `Mã nhân viên - Tên nhân viên` thay vì
+`Tên (Mã)`, (2) thêm nút Xóa ở từng dòng, (3) SS/ASM có thêm nút Điều chỉnh
+(sửa giá trị kế hoạch) bên cạnh nút Xóa.
+
+**Sự cố khi lấy code nhánh:** `git checkout feature/xay-dung-duyet-kpi` từ
+Cowork chỉ thành công 1 phần - 6 file mới (`build-actions.ts`,
+`kpi-autocomplete.tsx`, `kpi-duyet.tsx`, `kpi-tabs.tsx`, `kpi-xay-dung.tsx`,
+`kpi-chi-tieu.ts`) được ghi đúng, nhưng `unlink` file cũ `kpi/page.tsx` báo
+`Operation not permitted` (lỗi FUSE quen thuộc, xem mục cuối file) nên
+`page.tsx` KHÔNG được thay bằng bản nhánh, và `HEAD` không chuyển được sang
+nhánh mới (vẫn nằm trên `main`, `git branch --show-current` xác nhận). Đã xử
+lý: áp trực tiếp đúng phần diff của `page.tsx` bằng Edit tool (không qua git),
+nên kết quả cuối cùng là code của nhánh feature được **gộp thẳng vào working
+tree của `main`** - không phải merge nhánh qua git, chỉ là copy nội dung tương
+đương. User cần tự quyết định khi commit: giữ nguyên trên `main` (theo đúng
+pattern làm việc từ đầu dự án - 1 nhánh duy nhất) hoặc tách lại thành nhánh
+riêng nếu muốn review qua PR trước.
+
+**Đã bổ sung (trên nền code nhánh có sẵn):**
+- `build-actions.ts`: thêm `xoaDongKpi(id)` (SS/ASM xóa MỘT dòng ở BẤT KỲ
+  trạng thái nào - khác `xoaDongKpiNhap()` cũ chỉ cho chính NV xóa dòng
+  "nhập" của mình), `dieuChinhKeHoachDongKpi(id, {...})` (SS/ASM sửa riêng
+  các giá trị kế hoạch - số lượng khách hàng kế hoạch/sản lượng tối
+  thiểu/ngưỡng nhóm/điểm KPI kế hoạch - KHÔNG đụng `trang_thai_duyet`, khác
+  `suaVaDuyetDongKpi()` cũ vốn sửa+duyệt luôn trong 1 bước), và
+  `layTatCaKpiTheoThang()` (lấy TOÀN BỘ dòng KPI theo tháng bất kể trạng thái,
+  thay vì chỉ lọc `cho_duyet` như `layDanhSachChoDuyet()` cũ - tách phần gom
+  nhóm theo NV ra hàm dùng chung `gomTheoNv()` để tránh lặp code).
+- `kpi-duyet.tsx`: đổi nguồn dữ liệu sang `layTatCaKpiTheoThang()` (hiển thị
+  mọi chỉ tiêu KPI hiện có của từng NV, không chỉ dòng chờ duyệt - theo đúng
+  lựa chọn của user), tiêu đề nhóm đổi thành hàm riêng `maTruocTen()` cho ra
+  `"Mã - Tên"` (không đổi `ghepTenMa()` dùng chung toàn app vì các trang khác
+  vẫn cần giữ format `"Tên (Mã)"`), thêm cột Trạng thái + nút Điều chỉnh (form
+  inline sửa các trường kế hoạch, ẩn/hiện theo `layCauHinhChiTieu()` giống
+  cách form Xây dựng đang làm) và nút Xóa (có `window.confirm`) trên MỌI dòng;
+  nút Duyệt/Từ chối vẫn chỉ hiện khi dòng đang `cho_duyet`.
+- Đã kiểm tra `tsc --noEmit` (0 lỗi trong `src/`, chỉ còn lỗi môi trường sẵn
+  có trong `.next/types/*` do version generator cũ - không liên quan thay đổi
+  lần này) và `eslint` (sạch) cho toàn bộ 6 file liên quan. Không chạy được
+  `next build` đầy đủ trong sandbox Cowork vì thiếu SWC native binary cho
+  Linux x64 (môi trường sandbox, không phải lỗi code) - **cần user tự chạy
+  `npm run build` hoặc `npm run dev` trên máy Windows để xác nhận UI trước khi
+  push**, Cowork chưa verify được bằng mắt.

@@ -411,6 +411,58 @@ export async function moLaiDongKpi(id: string) {
   revalidatePath("/kpi");
 }
 
+// Xoa han 1 dong KPI o BAT KY trang thai nao (nhap/cho_duyet/da_duyet/
+// tu_choi) - danh cho SS/ASM don dep truc tiep tu man hinh Phe duyet, khac
+// voi xoaDongKpiNhap() (chi cho chinh NV xoa dong "nhap" cua minh o man hinh
+// Xay dung).
+export async function xoaDongKpi(id: string) {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { error } = await supabase.from("Chi tieu KPIs").delete().eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
+export type DieuChinhKeHoachInput = {
+  soLuongKhachHangKeHoach?: number | null;
+  sanLuongKeHoachToiThieu?: number | null;
+  soLuongToiThieuCanDat?: number | null;
+  diemKpisKeHoach?: number | null;
+};
+
+// SS/ASM chinh lai CAC GIA TRI KE HOACH cua 1 dong o BAT KY trang thai nao,
+// KHONG dong thoi doi trang_thai_duyet (khac suaVaDuyetDongKpi() - ham do vua
+// sua vua tu dong duyet luon). Chi cap nhat truong nao duoc truyen vao (khac
+// undefined) - cho phep sua rieng 1-2 truong ma khong dong lai ca dong.
+export async function dieuChinhKeHoachDongKpi(id: string, input: DieuChinhKeHoachInput) {
+  await assertQuanLy();
+  const row: Record<string, number | null> = {};
+
+  if (input.soLuongKhachHangKeHoach !== undefined) {
+    row.so_luong_khach_hang_ke_hoach = input.soLuongKhachHangKeHoach;
+  }
+  if (input.sanLuongKeHoachToiThieu !== undefined) {
+    row.san_luong_ke_hoach_toi_thieu = input.sanLuongKeHoachToiThieu;
+  }
+  if (input.soLuongToiThieuCanDat !== undefined) {
+    row.so_luong_toi_thieu_can_dat = input.soLuongToiThieuCanDat;
+  }
+  if (input.diemKpisKeHoach !== undefined) {
+    if (input.diemKpisKeHoach == null || !Number.isFinite(input.diemKpisKeHoach) || input.diemKpisKeHoach < 0) {
+      throw new Error("Điểm KPI kế hoạch phải là số không âm.");
+    }
+    row.diem_kpis_ke_hoach = input.diemKpisKeHoach;
+  }
+  if (Object.keys(row).length === 0) return;
+
+  const supabase = await createClient();
+  const { error } = await supabase.from("Chi tieu KPIs").update(row).eq("id", id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/kpi");
+}
+
 // ==================== Tim kiem danh sach tong (khong gioi han theo NV) ====================
 
 export type KetQuaTimKhach = { ma_khach: string; ten_khach: string | null };
@@ -497,22 +549,10 @@ export type ChoDuyetGroup = {
   rows: ChiTieuKpiRow[];
 };
 
-// Danh sach cac dong "cho_duyet" trong pham vi nhin thay cua SS/ASM dang
-// dang nhap (RLS scoped read tu lo), gom theo NV, cho thang dang chon.
-export async function layDanhSachChoDuyet(thangDanhGia: string): Promise<ChoDuyetGroup[]> {
-  await assertQuanLy();
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("Chi tieu KPIs")
-    .select(
-      "id,ma_nhan_vien,chi_tieu,chi_tiet_ke_hoach_san_pham,ma_khach,so_luong_khach_hang_ke_hoach,san_luong_ke_hoach_toi_thieu,so_luong_toi_thieu_can_dat,diem_kpis_ke_hoach,trang_thai_duyet,ghi_chu_duyet,ghi_chu,nguoi_tao,thang_danh_gia",
-    )
-    .eq("thang_danh_gia", thangDanhGia)
-    .eq("trang_thai_duyet", "cho_duyet")
-    .order("ma_nhan_vien", { ascending: true });
-  if (error) throw new Error(error.message);
+const KPI_COLUMNS =
+  "id,ma_nhan_vien,chi_tieu,chi_tiet_ke_hoach_san_pham,ma_khach,so_luong_khach_hang_ke_hoach,san_luong_ke_hoach_toi_thieu,so_luong_toi_thieu_can_dat,diem_kpis_ke_hoach,trang_thai_duyet,ghi_chu_duyet,ghi_chu,nguoi_tao,thang_danh_gia";
 
-  const rows = (data ?? []) as ChiTieuKpiRow[];
+function gomTheoNv(rows: ChiTieuKpiRow[]): ChoDuyetGroup[] {
   const byNv = new Map<string, ChiTieuKpiRow[]>();
   for (const r of rows) {
     const key = r.ma_nhan_vien;
@@ -520,6 +560,40 @@ export async function layDanhSachChoDuyet(thangDanhGia: string): Promise<ChoDuye
     byNv.get(key)!.push(r);
   }
   return Array.from(byNv.entries()).map(([ma_nhan_vien, rows]) => ({ ma_nhan_vien, rows }));
+}
+
+// Danh sach cac dong "cho_duyet" trong pham vi nhin thay cua SS/ASM dang
+// dang nhap (RLS scoped read tu lo), gom theo NV, cho thang dang chon.
+export async function layDanhSachChoDuyet(thangDanhGia: string): Promise<ChoDuyetGroup[]> {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("Chi tieu KPIs")
+    .select(KPI_COLUMNS)
+    .eq("thang_danh_gia", thangDanhGia)
+    .eq("trang_thai_duyet", "cho_duyet")
+    .order("ma_nhan_vien", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  return gomTheoNv((data ?? []) as ChiTieuKpiRow[]);
+}
+
+// Toan bo dong KPI (BAT KY trang_thai_duyet nao) trong pham vi nhin thay cua
+// SS/ASM cho thang dang chon, gom theo NV - dung cho man hinh Phe duyet de
+// SS/ASM ra soat/xoa/dieu chinh bat ky dong nao cua NV, khong chi rieng cac
+// dong dang "cho_duyet".
+export async function layTatCaKpiTheoThang(thangDanhGia: string): Promise<ChoDuyetGroup[]> {
+  await assertQuanLy();
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("Chi tieu KPIs")
+    .select(KPI_COLUMNS)
+    .eq("thang_danh_gia", thangDanhGia)
+    .order("ma_nhan_vien", { ascending: true })
+    .order("chi_tieu", { ascending: true });
+  if (error) throw new Error(error.message);
+
+  return gomTheoNv((data ?? []) as ChiTieuKpiRow[]);
 }
 
 // Ten khach hang cho danh sach dong da co (hien thi "Ten (Ma)" thay vi chi
