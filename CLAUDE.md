@@ -1,2 +1,0 @@
-@AGENTS.md
-@GHI-CHU-VAN-HANH.md
