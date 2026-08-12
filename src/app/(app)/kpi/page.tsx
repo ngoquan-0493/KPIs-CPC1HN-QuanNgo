@@ -8,6 +8,15 @@ import { formatVnd, isExcludedSaleRow, fetchAllRows, preferClosedMonthRows } fro
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
 import { IconClock, IconUsers } from "@/components/icons";
+import { getCurrentEmployee } from "@/lib/current-employee";
+import KpiTabs from "@/components/kpi-tabs";
+import KpiXayDung from "@/components/kpi-xay-dung";
+import KpiDuyet from "@/components/kpi-duyet";
+import {
+  layDanhSachKpiTheoThang,
+  layDanhSachChoDuyet,
+  layTenKhachTheoMa,
+} from "./build-actions";
 
 type KpiRow = {
   "Mã Nhân viên": string;
@@ -200,10 +209,54 @@ function nguongNhomSummary(
 export default async function KpiPage({
   searchParams,
 }: {
-  searchParams: Promise<{ thang?: string; ss?: string; nv?: string }>;
+  searchParams: Promise<{ thang?: string; ss?: string; nv?: string; tab?: string }>;
 }) {
   const supabase = await createClient();
-  const { thang, ss: selectedSs, nv: selectedNv } = await searchParams;
+  const { thang, ss: selectedSs, nv: selectedNv, tab: tabParam } = await searchParams;
+
+  const currentEmployee = await getCurrentEmployee();
+  const viTriHienTai = currentEmployee?.["Vị trí"] ?? null;
+  const laQuanLy = viTriHienTai === "SS" || viTriHienTai === "ASM";
+  const tab = (tabParam === "xay-dung" || (tabParam === "duyet" && laQuanLy)) ? tabParam : "tien-do";
+
+  if (tab === "xay-dung" || tab === "duyet") {
+    let danhSachNv: { code: string; name: string }[] | undefined;
+    if (laQuanLy) {
+      const { data: empData } = await supabase
+        .from("Danh sach nhan vien")
+        .select("ma_nhan_vien,ten_nhan_vien")
+        .neq("vi_tri", "ASM")
+        .order("ten_nhan_vien", { ascending: true });
+      danhSachNv = (empData ?? []).map((e) => ({
+        code: (e.ma_nhan_vien ?? "").replace(/\D/g, "").replace(/^0+/, "") || e.ma_nhan_vien,
+        name: e.ten_nhan_vien ?? e.ma_nhan_vien,
+      }));
+    }
+
+    const now = new Date();
+    const thangMacDinh = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+    const maNhanVienHienTai = currentEmployee?.["Mã nhân viên"] ?? "";
+    const tenNhanVienHienTai = currentEmployee?.["Tên nhân viên"] ?? maNhanVienHienTai;
+
+    return (
+      <div className="mx-auto max-w-[1600px] p-6 lg:p-8">
+        <PageHeader title="KPI" description="Xây dựng và phê duyệt chỉ tiêu KPI tháng" />
+        <KpiTabs hienThiDuyet={laQuanLy} />
+        {tab === "xay-dung" && maNhanVienHienTai && (
+          <KpiXayDungLoader
+            maNhanVien={maNhanVienHienTai}
+            tenNhanVien={tenNhanVienHienTai}
+            viTri={viTriHienTai}
+            danhSachNv={danhSachNv}
+            thangMacDinh={thangMacDinh}
+          />
+        )}
+        {tab === "duyet" && (
+          <KpiDuyetLoader thangMacDinh={thangMacDinh} danhSachNv={danhSachNv ?? []} />
+        )}
+      </div>
+    );
+  }
 
   const monthsRes = await supabase
     .from("Chi tieu KPIs")
@@ -478,6 +531,8 @@ export default async function KpiPage({
           </>
         }
       />
+
+      <KpiTabs hienThiDuyet={laQuanLy} />
 
       {error && (
         <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
@@ -861,5 +916,58 @@ export default async function KpiPage({
         })}
       </div>
     </div>
+  );
+}
+
+async function KpiXayDungLoader({
+  maNhanVien,
+  tenNhanVien,
+  viTri,
+  danhSachNv,
+  thangMacDinh,
+}: {
+  maNhanVien: string;
+  tenNhanVien: string;
+  viTri: string | null;
+  danhSachNv?: { code: string; name: string }[];
+  thangMacDinh: string;
+}) {
+  const rows = await layDanhSachKpiTheoThang(maNhanVien, thangMacDinh);
+  const maKhachList = rows.map((r) => r.ma_khach).filter((v): v is string => !!v);
+  const tenKhach = maKhachList.length > 0 ? await layTenKhachTheoMa(maKhachList) : {};
+
+  return (
+    <KpiXayDung
+      maNhanVien={maNhanVien}
+      tenNhanVien={tenNhanVien}
+      viTri={viTri}
+      danhSachNv={danhSachNv}
+      thangBanDau={thangMacDinh}
+      rowsBanDau={rows}
+      tenKhachBanDau={tenKhach}
+    />
+  );
+}
+
+async function KpiDuyetLoader({
+  thangMacDinh,
+  danhSachNv,
+}: {
+  thangMacDinh: string;
+  danhSachNv: { code: string; name: string }[];
+}) {
+  const groups = await layDanhSachChoDuyet(thangMacDinh);
+  const maKhachList = groups.flatMap((g) => g.rows.map((r) => r.ma_khach)).filter((v): v is string => !!v);
+  const tenKhach = maKhachList.length > 0 ? await layTenKhachTheoMa(maKhachList) : {};
+  const tenNhanVienMap: Record<string, string> = {};
+  for (const nv of danhSachNv) tenNhanVienMap[nv.code] = nv.name;
+
+  return (
+    <KpiDuyet
+      thangBanDau={thangMacDinh}
+      groupsBanDau={groups}
+      tenNhanVienMap={tenNhanVienMap}
+      tenKhachBanDau={tenKhach}
+    />
   );
 }
