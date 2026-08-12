@@ -8,6 +8,7 @@ import {
   guiDuyet,
   guiDuyetTatCa,
   datNguongNhom,
+  datDiemKeHoachNhom,
   timKiemKhachHang,
   timKiemSanPham,
   layDanhSachKpiTheoThang,
@@ -60,6 +61,7 @@ type FormState = {
   tenKhach: string;
   soLuongKhachHangKeHoach: string;
   sanLuongKeHoachToiThieu: string;
+  nguongNhom: string;
   soTienKeHoach: string;
   diemKpisKeHoach: string;
   ghiChu: string;
@@ -72,6 +74,7 @@ const FORM_RONG: FormState = {
   tenKhach: "",
   soLuongKhachHangKeHoach: "",
   sanLuongKeHoachToiThieu: "",
+  nguongNhom: "",
   soTienKeHoach: "",
   diemKpisKeHoach: "",
   ghiChu: "",
@@ -87,6 +90,7 @@ function rowToForm(row: ChiTieuKpiRow, tenKhach: string | null): FormState {
     tenKhach: tenKhach ?? "",
     soLuongKhachHangKeHoach: row.so_luong_khach_hang_ke_hoach?.toString() ?? "",
     sanLuongKeHoachToiThieu: row.san_luong_ke_hoach_toi_thieu?.toString() ?? "",
+    nguongNhom: row.so_luong_toi_thieu_can_dat?.toString() ?? "",
     soTienKeHoach: isDoanhSo ? row.chi_tiet_ke_hoach_san_pham ?? "" : "",
     diemKpisKeHoach: row.diem_kpis_ke_hoach?.toString() ?? "",
     ghiChu: row.ghi_chu ?? "",
@@ -103,6 +107,7 @@ function formToInput(maNhanVien: string, thangDanhGia: string, f: FormState) {
     soTienKeHoach: f.soTienKeHoach ? Number(f.soTienKeHoach) : null,
     soLuongKhachHangKeHoach: f.soLuongKhachHangKeHoach ? Number(f.soLuongKhachHangKeHoach) : null,
     sanLuongKeHoachToiThieu: f.sanLuongKeHoachToiThieu ? Number(f.sanLuongKeHoachToiThieu) : null,
+    nguongNhom: f.nguongNhom ? Number(f.nguongNhom) : null,
     diemKpisKeHoach: Number(f.diemKpisKeHoach || 0),
     ghiChu: f.ghiChu || null,
   };
@@ -114,10 +119,17 @@ function KpiRowForm({
   form,
   setForm,
   disabled,
+  nguongNhomTheoChiTieu,
+  diemKeHoachNhomTheoChiTieu,
 }: {
   form: FormState;
   setForm: (f: FormState) => void;
   disabled?: boolean;
+  // Nguong hoan thanh nhom / diem KPI ke hoach nhom hien co cua tung chi_tieu
+  // (tu cac dong da ton tai) - dung de tu dien san khi doi chi_tieu, tranh NV
+  // go lai hoac ghi de nham gia tri khac cho cung 1 nhom.
+  nguongNhomTheoChiTieu?: Record<string, number | undefined>;
+  diemKeHoachNhomTheoChiTieu?: Record<string, number | undefined>;
 }) {
   const cauHinh = layCauHinhChiTieu(form.chiTieu);
 
@@ -126,7 +138,17 @@ function KpiRowForm({
       <select
         value={form.chiTieu}
         disabled={disabled}
-        onChange={(e) => setForm({ ...FORM_RONG, chiTieu: e.target.value })}
+        onChange={(e) => {
+          const chiTieuMoi = e.target.value;
+          const nguongCoSan = nguongNhomTheoChiTieu?.[chiTieuMoi];
+          const diemCoSan = diemKeHoachNhomTheoChiTieu?.[chiTieuMoi];
+          setForm({
+            ...FORM_RONG,
+            chiTieu: chiTieuMoi,
+            nguongNhom: nguongCoSan != null ? String(nguongCoSan) : "",
+            diemKpisKeHoach: diemCoSan != null ? String(diemCoSan) : "",
+          });
+        }}
         className={inputClass}
       >
         {DANH_SACH_CHI_TIEU.map((ct) => (
@@ -188,6 +210,24 @@ function KpiRowForm({
         />
       )}
 
+      {cauHinh?.canNguongNhom && (
+        <div className="sm:col-span-2 lg:col-span-1">
+          <input
+            type="number"
+            min={0}
+            value={form.nguongNhom}
+            disabled={disabled}
+            onChange={(e) => setForm({ ...form, nguongNhom: e.target.value })}
+            placeholder="Ngưỡng hoàn thành nhóm (vd: 3)"
+            className={`w-full ${inputClass}`}
+          />
+          <p className="mt-0.5 text-[10px] text-slate-400">
+            Số dòng tối thiểu trong nhóm &quot;{cauHinh.nhan}&quot; cần đạt để được 100% điểm cả
+            nhóm tháng này — áp dụng chung cho mọi dòng cùng nhóm, không phải riêng dòng này.
+          </p>
+        </div>
+      )}
+
       {cauHinh?.nhom === "doanh_so" && (
         <input
           type="number"
@@ -200,15 +240,23 @@ function KpiRowForm({
         />
       )}
 
-      <input
-        type="number"
-        min={0}
-        value={form.diemKpisKeHoach}
-        disabled={disabled}
-        onChange={(e) => setForm({ ...form, diemKpisKeHoach: e.target.value })}
-        placeholder="Điểm KPI kế hoạch"
-        className={inputClass}
-      />
+      <div className="sm:col-span-2 lg:col-span-1">
+        <input
+          type="number"
+          min={0}
+          value={form.diemKpisKeHoach}
+          disabled={disabled}
+          onChange={(e) => setForm({ ...form, diemKpisKeHoach: e.target.value })}
+          placeholder={cauHinh?.canNguongNhom ? "Điểm KPI kế hoạch CẢ NHÓM" : "Điểm KPI kế hoạch"}
+          className={`w-full ${inputClass}`}
+        />
+        {cauHinh?.canNguongNhom && (
+          <p className="mt-0.5 text-[10px] text-slate-400">
+            Đây là điểm kế hoạch cho CẢ NHÓM &quot;{cauHinh.nhan}&quot; tháng này, không phải riêng
+            dòng này — áp dụng chung cho mọi dòng cùng nhóm.
+          </p>
+        )}
+      </div>
 
       <input
         type="text"
@@ -323,6 +371,23 @@ export default function KpiXayDung({
     return map;
   }, [rows]);
 
+  const nguongNhomTheoChiTieu = useMemo(() => {
+    const map: Record<string, number | undefined> = {};
+    for (const [chiTieu, chiTieuRows] of rowsByChiTieu) {
+      map[chiTieu] = chiTieuRows.find((r) => r.so_luong_toi_thieu_can_dat != null)?.so_luong_toi_thieu_can_dat ?? undefined;
+    }
+    return map;
+  }, [rowsByChiTieu]);
+
+  const diemKeHoachNhomTheoChiTieu = useMemo(() => {
+    const map: Record<string, number | undefined> = {};
+    for (const [chiTieu, chiTieuRows] of rowsByChiTieu) {
+      if (!layCauHinhChiTieu(chiTieu)?.canNguongNhom) continue;
+      map[chiTieu] = chiTieuRows.find((r) => r.diem_kpis_ke_hoach != null)?.diem_kpis_ke_hoach ?? undefined;
+    }
+    return map;
+  }, [rowsByChiTieu]);
+
   const soDongNhap = rows.filter((r) => r.trang_thai_duyet === "nhap").length;
 
   function handleThemMoi() {
@@ -402,6 +467,20 @@ export default function KpiXayDung({
     });
   }
 
+  function handleDatDiemKeHoachNhom(chiTieu: string, diem: string) {
+    setErrorMsg(null);
+    const n = Number(diem);
+    if (!Number.isFinite(n) || n < 0) return;
+    startTransition(async () => {
+      try {
+        await datDiemKeHoachNhom(nvDangChon, chiTieu, thang, n);
+        await taiLai(nvDangChon, thang);
+      } catch (e) {
+        setErrorMsg(e instanceof Error ? e.message : "Có lỗi xảy ra.");
+      }
+    });
+  }
+
   return (
     <div>
       <div className="mb-5 flex flex-wrap items-end gap-3">
@@ -451,7 +530,7 @@ export default function KpiXayDung({
 
       <Card padding="p-4" className="mb-6">
         <SectionHeading title="Thêm chỉ tiêu mới" />
-        <KpiRowForm form={form} setForm={setForm} disabled={isPending} />
+        <KpiRowForm form={form} setForm={setForm} disabled={isPending} nguongNhomTheoChiTieu={nguongNhomTheoChiTieu} diemKeHoachNhomTheoChiTieu={diemKeHoachNhomTheoChiTieu} />
         {errorMsg && <p className="mt-2 text-xs text-red-600">{errorMsg}</p>}
         <div className="mt-3">
           <button
@@ -475,23 +554,42 @@ export default function KpiXayDung({
           const cauHinh = layCauHinhChiTieu(chiTieu);
           const nguongHienTai = chiTieuRows.find((r) => r.so_luong_toi_thieu_can_dat != null)
             ?.so_luong_toi_thieu_can_dat;
+          const diemKeHoachNhomHienTai = chiTieuRows.find((r) => r.diem_kpis_ke_hoach != null)
+            ?.diem_kpis_ke_hoach;
           return (
             <Card key={chiTieu} padding="p-4" className="mb-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-semibold text-slate-900">{cauHinh?.nhan ?? chiTieu}</h3>
                 {cauHinh?.canNguongNhom && (
-                  <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                    Ngưỡng hoàn thành nhóm:
-                    <input
-                      type="number"
-                      min={0}
-                      defaultValue={nguongHienTai ?? ""}
-                      disabled={isPending}
-                      onBlur={(e) => e.target.value && handleDatNguong(chiTieu, e.target.value)}
-                      className={`w-16 ${inputClass}`}
-                      title={`Số dòng tối thiểu trong nhóm "${chiTieu}" cần đạt để được 100% điểm cả nhóm`}
-                    />
-                    / {chiTieuRows.length} dòng
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                    {nguongHienTai == null && (
+                      <Badge tone="warning">Chưa đặt ngưỡng hoàn thành nhóm</Badge>
+                    )}
+                    <span className="flex items-center gap-1.5">
+                      Ngưỡng hoàn thành nhóm:
+                      <input
+                        type="number"
+                        min={0}
+                        defaultValue={nguongHienTai ?? ""}
+                        disabled={isPending}
+                        onBlur={(e) => e.target.value && handleDatNguong(chiTieu, e.target.value)}
+                        className={`w-16 ${inputClass}`}
+                        title={`Số dòng tối thiểu trong nhóm "${chiTieu}" cần đạt để được 100% điểm cả nhóm`}
+                      />
+                      / {chiTieuRows.length} dòng
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      Điểm kế hoạch nhóm:
+                      <input
+                        type="number"
+                        min={0}
+                        defaultValue={diemKeHoachNhomHienTai ?? ""}
+                        disabled={isPending}
+                        onBlur={(e) => e.target.value && handleDatDiemKeHoachNhom(chiTieu, e.target.value)}
+                        className={`w-20 ${inputClass}`}
+                        title={`Tổng điểm KPI kế hoạch cho cả nhóm "${chiTieu}" tháng này`}
+                      />
+                    </span>
                   </div>
                 )}
               </div>
@@ -514,7 +612,7 @@ export default function KpiXayDung({
                         <tr key={row.id} className="border-b border-slate-100 align-top last:border-0">
                           {dangSua ? (
                             <td colSpan={5} className="py-2">
-                              <KpiRowForm form={form} setForm={setForm} disabled={isPending} />
+                              <KpiRowForm form={form} setForm={setForm} disabled={isPending} nguongNhomTheoChiTieu={nguongNhomTheoChiTieu} diemKeHoachNhomTheoChiTieu={diemKeHoachNhomTheoChiTieu} />
                               {errorMsg && <p className="mt-2 text-xs text-red-600">{errorMsg}</p>}
                               <div className="mt-2 flex gap-2">
                                 <button
