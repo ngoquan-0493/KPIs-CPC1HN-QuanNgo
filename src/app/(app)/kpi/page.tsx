@@ -987,6 +987,37 @@ async function KpiDuyetLoader({
   const tenNhanVienMap: Record<string, string> = {};
   for (const nv of danhSachNv) tenNhanVienMap[nv.code] = nv.name;
 
+  // danhSachNv loai ASM (chi de chon "xay KPI thay cho NV nao" o tab Xay
+  // dung) - nhung mot dong KPI van co the dung ma_nhan_vien cua chinh
+  // SS/ASM (vd tu tao de test), khien nhom do khong tim thay ten trong
+  // tenNhanVienMap va chi hien mai ma. Bu them bang cach tra truc tiep
+  // TAT CA ma_nhan_vien thuc su xuat hien trong du lieu, khong loc vi_tri.
+  const maNvTrongDuLieu = Array.from(
+    new Set(groups.map((g) => g.ma_nhan_vien).filter((ma) => !(ma in tenNhanVienMap))),
+  );
+  if (maNvTrongDuLieu.length > 0) {
+    const supabase = await createClient();
+    const { data: nvData } = await supabase
+      .from("Danh sach nhan vien")
+      .select("ma_nhan_vien,ten_nhan_vien")
+      .in("ma_nhan_vien", maNvTrongDuLieu);
+    // So khop theo ma DA CHUAN HOA (bo so 0 dau) vi ma_nhan_vien luu trong
+    // "Chi tieu KPIs" co the o dang khong chuan hoa (vd SS/ASM tu tao dong
+    // cho chinh minh dung nguyen "Mã nhân viên" tho, con dong tao thay cho
+    // NV khac qua danhSachNv thi da chuan hoa) - roi gan lai DUNG theo key
+    // tho (g.ma_nhan_vien) de khop voi cach kpi-duyet.tsx tra cuu.
+    const tenTheoMaChuanHoa = new Map<string, string>();
+    for (const nv of nvData ?? []) {
+      const chuanHoa = (nv.ma_nhan_vien ?? "").replace(/\D/g, "").replace(/^0+/, "") || nv.ma_nhan_vien;
+      if (chuanHoa) tenTheoMaChuanHoa.set(chuanHoa, nv.ten_nhan_vien ?? nv.ma_nhan_vien);
+    }
+    for (const maTho of maNvTrongDuLieu) {
+      const chuanHoa = maTho.replace(/\D/g, "").replace(/^0+/, "") || maTho;
+      const ten = tenTheoMaChuanHoa.get(chuanHoa);
+      if (ten) tenNhanVienMap[maTho] = ten;
+    }
+  }
+
   return (
     <KpiDuyet
       thangBanDau={thangMacDinh}
