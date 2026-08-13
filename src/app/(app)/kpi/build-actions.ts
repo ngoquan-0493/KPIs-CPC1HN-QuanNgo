@@ -21,6 +21,25 @@ async function assertQuanLy(): Promise<void> {
   }
 }
 
+// Tra ve ma_nhan_vien CHUAN (dung CHINH XAC dinh dang dang luu trong "Danh
+// sach nhan vien") tu 1 ma bat ky (co the da bi strip so 0 dau o phia client).
+// Bat buoc phai chuan hoa TRUOC KHI ghi vao "Chi tieu KPIs" - neu khong, dong
+// SS/ASM tao thay se bi luu voi 1 chuoi ma_nhan_vien KHAC voi ma chinh chu
+// (vd "018074" -> "18074"), khien no bi tach thanh "nhan vien ao" thu 2, NV
+// that khong thay dong do khi tu vao xem KPI cua minh (bug da xac nhan qua
+// du lieu thuc te: 5 NV / 33 dong bi lech ma truoc khi co fix nay).
+async function chuanHoaMaNhanVien(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  maBatKy: string,
+): Promise<string> {
+  const target = maBatKy.trim();
+  if (!target) return target;
+
+  const { data } = await supabase.from("Danh sach nhan vien").select("ma_nhan_vien");
+  const match = (data ?? []).find((e) => normCode(e.ma_nhan_vien as string) === normCode(target));
+  return (match?.ma_nhan_vien as string) ?? target;
+}
+
 // Xac dinh NV se duoc xay dung KPI: mac dinh la chinh nguoi goi. SS/ASM co
 // the xay/sua thay cho 1 NV duoi quyen (giao ma_nhan_vien khac chinh minh) -
 // RLS (scoped insert/update theo visible_employee_codes()) van la lop chan
@@ -30,12 +49,15 @@ async function xacDinhNvMucTieu(maNhanVienMucTieu?: string) {
   if (!employee) throw new Error("Không xác định được nhân viên đang đăng nhập.");
 
   const maChinhMinh = employee["Mã nhân viên"];
-  const target = maNhanVienMucTieu?.trim() || maChinhMinh;
-  const laTaoThay = normCode(target) !== normCode(maChinhMinh);
+  const targetRaw = maNhanVienMucTieu?.trim() || maChinhMinh;
+  const laTaoThay = normCode(targetRaw) !== normCode(maChinhMinh);
 
   if (laTaoThay && employee["Vị trí"] !== "SS" && employee["Vị trí"] !== "ASM") {
     throw new Error("Chỉ SS/ASM mới có quyền xây dựng KPI thay cho nhân viên khác.");
   }
+
+  const supabase = await createClient();
+  const target = laTaoThay ? await chuanHoaMaNhanVien(supabase, targetRaw) : maChinhMinh;
 
   return { maChinhMinh, target, viTri: employee["Vị trí"] };
 }
@@ -428,6 +450,7 @@ export type DieuChinhKeHoachInput = {
   soLuongKhachHangKeHoach?: number | null;
   sanLuongKeHoachToiThieu?: number | null;
   soLuongToiThieuCanDat?: number | null;
+  soTienKeHoach?: number | null; // Doanh so* - luu vao chi_tiet_ke_hoach_san_pham (chuoi so)
   diemKpisKeHoach?: number | null;
 };
 
@@ -437,7 +460,7 @@ export type DieuChinhKeHoachInput = {
 // undefined) - cho phep sua rieng 1-2 truong ma khong dong lai ca dong.
 export async function dieuChinhKeHoachDongKpi(id: string, input: DieuChinhKeHoachInput) {
   await assertQuanLy();
-  const row: Record<string, number | null> = {};
+  const row: Record<string, number | string | null> = {};
 
   if (input.soLuongKhachHangKeHoach !== undefined) {
     row.so_luong_khach_hang_ke_hoach = input.soLuongKhachHangKeHoach;
@@ -447,6 +470,12 @@ export async function dieuChinhKeHoachDongKpi(id: string, input: DieuChinhKeHoac
   }
   if (input.soLuongToiThieuCanDat !== undefined) {
     row.so_luong_toi_thieu_can_dat = input.soLuongToiThieuCanDat;
+  }
+  if (input.soTienKeHoach !== undefined) {
+    if (input.soTienKeHoach == null || !Number.isFinite(input.soTienKeHoach) || input.soTienKeHoach <= 0) {
+      throw new Error("Số tiền kế hoạch phải là số lớn hơn 0.");
+    }
+    row.chi_tiet_ke_hoach_san_pham = String(Math.round(input.soTienKeHoach));
   }
   if (input.diemKpisKeHoach !== undefined) {
     if (input.diemKpisKeHoach == null || !Number.isFinite(input.diemKpisKeHoach) || input.diemKpisKeHoach < 0) {

@@ -160,10 +160,16 @@ export default async function CustomersPage({
 
   const ssByCode = new Map<string, string | null>();
   const nameByCode = new Map<string, string | null>();
+  // Danh sach NV DANG HOAT DONG (chi lay tu "Danh sach nhan vien" nhu empRes -
+  // NV da nghi viec/doi vi tri se khong con trong danh sach nay) - dung de
+  // SS/ASM giao lai 1 khach-san pham qua han cho NV KHAC trong CUNG nhom SS
+  // khi NV goc phu trach da nghi viec, xem TheoDoiSection/TheoDoiToggle.
+  const employees: { code: string; name: string; ss: string | null }[] = [];
   for (const e of (empRes.data ?? []) as EmployeeRow[]) {
     const code = normCode(e.ma_nhan_vien);
     ssByCode.set(code, e.ss);
     nameByCode.set(code, e.ten_nhan_vien);
+    employees.push({ code: e.ma_nhan_vien, name: e.ten_nhan_vien ?? e.ma_nhan_vien, ss: e.ss });
   }
   const ssList = Array.from(new Set(Array.from(ssByCode.values()).filter((v): v is string => !!v))).sort(
     (a, b) => a.localeCompare(b),
@@ -323,6 +329,7 @@ export default async function CustomersPage({
           selectedSs={selectedSs}
           selectedNv={selectedNv}
           ssByCode={ssByCode}
+          employees={employees}
           viTriHienTai={currentEmployee?.["Vị trí"] ?? null}
           maNhanVienHienTai={currentEmployee?.["Mã nhân viên"] ?? null}
         />

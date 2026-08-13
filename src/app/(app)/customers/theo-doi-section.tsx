@@ -42,6 +42,7 @@ type PlanRow = {
   muc_do_canh_bao: string;
   trang_thai: string;
   giao_boi: string | null;
+  ma_nhan_vien: string;
 };
 
 type CheckinRow = { ma_khach: string | null };
@@ -183,15 +184,30 @@ export default async function TheoDoiSection({
   selectedSs,
   selectedNv,
   ssByCode,
+  employees,
   viTriHienTai,
   maNhanVienHienTai,
 }: {
   selectedSs?: string;
   selectedNv?: string;
   ssByCode: Map<string, string | null>;
+  employees: { code: string; name: string; ss: string | null }[];
   viTriHienTai: string | null;
   maNhanVienHienTai: string | null;
 }) {
+  // Gom NV DANG HOAT DONG theo nhom SS - dung de SS/ASM giao lai 1 khach-san
+  // pham qua han cho NV KHAC trong CUNG nhom khi NV goc phu trach da nghi
+  // viec (khong con trong "Danh sach nhan vien" nen tu dong bien mat khoi
+  // danh sach chon, xem TheoDoiToggle).
+  const nvTheoSs = new Map<string, { code: string; name: string }[]>();
+  const tenNvTheoMa = new Map<string, string>();
+  for (const e of employees) {
+    tenNvTheoMa.set(normCode(e.code), e.name);
+    if (!e.ss) continue;
+    if (!nvTheoSs.has(e.ss)) nvTheoSs.set(e.ss, []);
+    nvTheoSs.get(e.ss)!.push({ code: e.code, name: e.name });
+  }
+  for (const list of nvTheoSs.values()) list.sort((a, b) => a.name.localeCompare(b.name));
   const supabase = await createClient();
 
   const { data: lapDonData, error: lapDonError } = await fetchAllRows<LapDonRow>((from, to) =>
@@ -265,7 +281,7 @@ export default async function TheoDoiSection({
     maKhachList.length > 0
       ? supabase
           .from("khach_hang_theo_doi_ke_hoach")
-          .select("ma_khach,ma_san_pham,muc_do_canh_bao,trang_thai,giao_boi")
+          .select("ma_khach,ma_san_pham,muc_do_canh_bao,trang_thai,giao_boi,ma_nhan_vien")
           .eq("tuan_bat_dau", start)
           .in("ma_khach", maKhachList)
       : Promise.resolve({ data: [] as PlanRow[] }),
@@ -377,6 +393,32 @@ export default async function TheoDoiSection({
                     : viTriHienTai === "SS" || viTriHienTai === "ASM"
                       ? "giao_viec"
                       : "chi_xem";
+                // NV DANG THUC SU duoc giao (co the KHAC voi item.maNhanVien
+                // neu SS/ASM da giao lai cho 1 NV khac truoc do) - dung lam
+                // gia tri chon san trong dropdown va de "Bo giao" xoa dung
+                // dong hien co, khong con phu thuoc vao NV goc phu trach.
+                const nvDaGiao = plan?.ma_nhan_vien ?? item.maNhanVien;
+                const tenNvDaGiao =
+                  normCode(nvDaGiao) === normCode(item.maNhanVien)
+                    ? item.tenNhanVien
+                    : (tenNvTheoMa.get(normCode(nvDaGiao)) ?? null);
+                const dongNghiepCungSs = nvTheoSs.get(ssByCode.get(normCode(item.maNhanVien)) ?? "") ?? [];
+                // Luon giu NV goc trong danh sach chon (du co the da nghi
+                // viec nen khong con trong "Danh sach nhan vien" dang hoat
+                // dong/nvTheoSs) - de SS/ASM van thay ro dang giao lai TU AI,
+                // khong bi mat lua chon "giu nguyen nguoi cu" neu ho van con.
+                const coNvGoc = dongNghiepCungSs.some((nv) => normCode(nv.code) === normCode(item.maNhanVien));
+                const danhSachNvCungSs = coNvGoc
+                  ? dongNghiepCungSs
+                  : [
+                      {
+                        code: item.maNhanVien,
+                        name: item.tenNhanVien
+                          ? `${item.tenNhanVien} (có thể đã nghỉ việc)`
+                          : item.maNhanVien,
+                      },
+                      ...dongNghiepCungSs,
+                    ];
                 return (
                   <div
                     key={item.maSanPham}
@@ -399,6 +441,9 @@ export default async function TheoDoiSection({
                       mucDoCanhBao={item.mucDo}
                       thangDanhGia={thangDanhGiaMoiNhat}
                       maNhanVienMucTieu={item.maNhanVien}
+                      nvDaGiao={nvDaGiao}
+                      tenNvDaGiao={tenNvDaGiao}
+                      danhSachNv={danhSachNvCungSs}
                       daLenKeHoach={!!plan}
                       daViengTham={daViengTuanNay.has(item.maKhach)}
                       giaoBoi={plan?.giao_boi ?? null}

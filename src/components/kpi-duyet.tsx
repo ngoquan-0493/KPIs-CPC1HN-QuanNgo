@@ -56,12 +56,13 @@ function maTruocTen(ma: string, ten: string | null | undefined): string {
   return `${ma} - ${t}`;
 }
 
+// Nhom "doanh_so" (Doanh so ke don - phong mach / Doanh so thau) khong co
+// khach hang/san pham rieng - chi_tiet_ke_hoach_san_pham la SO TIEN KE HOACH,
+// nen phai hien o cot "Kế hoạch" (xem keHoachDong) thay vi o day, tranh vua
+// lap lai vua khien cot Kế hoạch bi rong.
 function moTaDong(row: ChiTieuKpiRow, tenKhach: string | null): string {
   const cauHinh = layCauHinhChiTieu(row.chi_tieu);
-  if (cauHinh?.nhom === "doanh_so") {
-    const n = Number(row.chi_tiet_ke_hoach_san_pham);
-    return Number.isFinite(n) ? `${n.toLocaleString("vi-VN")} đ` : (row.chi_tiet_ke_hoach_san_pham ?? "—");
-  }
+  if (cauHinh?.nhom === "doanh_so") return "—";
   const parts: string[] = [];
   if (row.ma_khach) parts.push(ghepTenMa(tenKhach, row.ma_khach));
   if (row.chi_tiet_ke_hoach_san_pham && row.chi_tiet_ke_hoach_san_pham !== cauHinh?.ghiChuMacDinh) {
@@ -72,7 +73,10 @@ function moTaDong(row: ChiTieuKpiRow, tenKhach: string | null): string {
 
 function keHoachDong(row: ChiTieuKpiRow): string {
   const cauHinh = layCauHinhChiTieu(row.chi_tieu);
-  if (cauHinh?.nhom === "doanh_so") return "—";
+  if (cauHinh?.nhom === "doanh_so") {
+    const n = Number(row.chi_tiet_ke_hoach_san_pham);
+    return Number.isFinite(n) ? `${n.toLocaleString("vi-VN")} đ` : (row.chi_tiet_ke_hoach_san_pham ?? "—");
+  }
   const parts: string[] = [];
   if (row.so_luong_khach_hang_ke_hoach != null) parts.push(`${row.so_luong_khach_hang_ke_hoach} khách`);
   if (row.san_luong_ke_hoach_toi_thieu != null) parts.push(`SL tối thiểu ${row.san_luong_ke_hoach_toi_thieu}`);
@@ -92,6 +96,7 @@ type DieuChinhForm = {
   soLuongKhachHangKeHoach: string;
   sanLuongKeHoachToiThieu: string;
   soLuongToiThieuCanDat: string;
+  soTienKeHoach: string;
   diemKpisKeHoach: string;
 };
 
@@ -100,6 +105,7 @@ function rowToDieuChinhForm(row: ChiTieuKpiRow): DieuChinhForm {
     soLuongKhachHangKeHoach: row.so_luong_khach_hang_ke_hoach?.toString() ?? "",
     sanLuongKeHoachToiThieu: row.san_luong_ke_hoach_toi_thieu?.toString() ?? "",
     soLuongToiThieuCanDat: row.so_luong_toi_thieu_can_dat?.toString() ?? "",
+    soTienKeHoach: row.chi_tiet_ke_hoach_san_pham ?? "",
     diemKpisKeHoach: row.diem_kpis_ke_hoach?.toString() ?? "",
   };
 }
@@ -178,6 +184,11 @@ function DongKpi({
               ? Number(form.soLuongToiThieuCanDat)
               : null
             : undefined,
+          soTienKeHoach: cauHinh?.nhom === "doanh_so"
+            ? form.soTienKeHoach
+              ? Number(form.soTienKeHoach)
+              : null
+            : undefined,
           diemKpisKeHoach: Number(form.diemKpisKeHoach || 0),
         });
         setDieuChinhMode(false);
@@ -197,47 +208,68 @@ function DongKpi({
           </p>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
             {cauHinh?.canSoLuongKhach && (
-              <input
-                type="number"
-                min={0}
-                value={form.soLuongKhachHangKeHoach}
-                disabled={isPending}
-                onChange={(e) => setForm({ ...form, soLuongKhachHangKeHoach: e.target.value })}
-                placeholder="Số lượng khách hàng kế hoạch"
-                className={inputClass}
-              />
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-slate-600">
+                Số lượng khách hàng kế hoạch
+                <input
+                  type="number"
+                  min={0}
+                  value={form.soLuongKhachHangKeHoach}
+                  disabled={isPending}
+                  onChange={(e) => setForm({ ...form, soLuongKhachHangKeHoach: e.target.value })}
+                  className={inputClass}
+                />
+              </label>
             )}
             {cauHinh?.canSanLuongToiThieu && (
-              <input
-                type="number"
-                min={0}
-                value={form.sanLuongKeHoachToiThieu}
-                disabled={isPending}
-                onChange={(e) => setForm({ ...form, sanLuongKeHoachToiThieu: e.target.value })}
-                placeholder="Sản lượng kế hoạch tối thiểu"
-                className={inputClass}
-              />
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-slate-600">
+                Số lượng tối thiểu (sản lượng kế hoạch tối thiểu)
+                <input
+                  type="number"
+                  min={0}
+                  value={form.sanLuongKeHoachToiThieu}
+                  disabled={isPending}
+                  onChange={(e) => setForm({ ...form, sanLuongKeHoachToiThieu: e.target.value })}
+                  className={inputClass}
+                />
+              </label>
             )}
             {cauHinh?.canNguongNhom && (
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-slate-600">
+                Ngưỡng nhóm (ngưỡng hoàn thành nhóm)
+                <input
+                  type="number"
+                  min={0}
+                  value={form.soLuongToiThieuCanDat}
+                  disabled={isPending}
+                  onChange={(e) => setForm({ ...form, soLuongToiThieuCanDat: e.target.value })}
+                  className={inputClass}
+                />
+              </label>
+            )}
+            {cauHinh?.nhom === "doanh_so" && (
+              <label className="flex flex-col gap-1 text-[11px] font-medium text-slate-600">
+                Số tiền kế hoạch (đ)
+                <input
+                  type="number"
+                  min={0}
+                  value={form.soTienKeHoach}
+                  disabled={isPending}
+                  onChange={(e) => setForm({ ...form, soTienKeHoach: e.target.value })}
+                  className={inputClass}
+                />
+              </label>
+            )}
+            <label className="flex flex-col gap-1 text-[11px] font-medium text-slate-600">
+              Điểm KPI kế hoạch
               <input
                 type="number"
                 min={0}
-                value={form.soLuongToiThieuCanDat}
+                value={form.diemKpisKeHoach}
                 disabled={isPending}
-                onChange={(e) => setForm({ ...form, soLuongToiThieuCanDat: e.target.value })}
-                placeholder="Ngưỡng hoàn thành nhóm"
+                onChange={(e) => setForm({ ...form, diemKpisKeHoach: e.target.value })}
                 className={inputClass}
               />
-            )}
-            <input
-              type="number"
-              min={0}
-              value={form.diemKpisKeHoach}
-              disabled={isPending}
-              onChange={(e) => setForm({ ...form, diemKpisKeHoach: e.target.value })}
-              placeholder="Điểm KPI kế hoạch"
-              className={inputClass}
-            />
+            </label>
           </div>
           {errorMsg && <p className="mt-1.5 text-[11px] text-red-600">{errorMsg}</p>}
           <div className="mt-2 flex gap-2">

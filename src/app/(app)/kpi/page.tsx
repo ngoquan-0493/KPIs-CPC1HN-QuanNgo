@@ -250,8 +250,16 @@ export default async function KpiPage({
         .select("ma_nhan_vien,ten_nhan_vien")
         .neq("vi_tri", "ASM")
         .order("ten_nhan_vien", { ascending: true });
+      // QUAN TRONG: giu NGUYEN ma_nhan_vien tu "Danh sach nhan vien" (KHONG
+      // strip so 0 dau) - day la ma se duoc dung lam gia tri "ma_nhan_vien"
+      // khi SS/ASM tao/sua KPI thay cho NV (xem "Xay dung cho nhan vien" o
+      // kpi-xay-dung.tsx). Neu strip so 0 o day, dong KPI se bi ghi voi 1 ma
+      // KHAC voi ma chinh chu (vd "018074" -> "18074"), khien NV do khong
+      // thay dong SS/ASM vua tao khi tu vao xem KPI cua minh - day chinh la
+      // nguyen nhan da xac nhan qua du lieu thuc te (5 NV bi lech ma, 33 dong
+      // KPI "lac" khoi bang cua chinh chu).
       danhSachNv = (empData ?? []).map((e) => ({
-        code: (e.ma_nhan_vien ?? "").replace(/\D/g, "").replace(/^0+/, "") || e.ma_nhan_vien,
+        code: e.ma_nhan_vien ?? "",
         name: e.ten_nhan_vien ?? e.ma_nhan_vien,
       }));
     }

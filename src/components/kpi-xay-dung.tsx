@@ -278,12 +278,13 @@ function trangThaiBadge(trangThai: string) {
   );
 }
 
+// Nhom "doanh_so" (Doanh so ke don - phong mach / Doanh so thau) khong co
+// khach hang/san pham rieng - chi_tiet_ke_hoach_san_pham la SO TIEN KE HOACH,
+// nen phai hien o cot "Kế hoạch" (xem keHoachDong) thay vi o day, tranh vua
+// lap lai vua khien cot Kế hoạch bi rong.
 function moTaDong(row: ChiTieuKpiRow, tenKhach: string | null): string {
   const cauHinh = layCauHinhChiTieu(row.chi_tieu);
-  if (cauHinh?.nhom === "doanh_so") {
-    const n = Number(row.chi_tiet_ke_hoach_san_pham);
-    return Number.isFinite(n) ? `${n.toLocaleString("vi-VN")} đ` : (row.chi_tiet_ke_hoach_san_pham ?? "—");
-  }
+  if (cauHinh?.nhom === "doanh_so") return "—";
   const parts: string[] = [];
   if (row.ma_khach) parts.push(ghepTenMa(tenKhach, row.ma_khach));
   if (row.chi_tiet_ke_hoach_san_pham && row.chi_tiet_ke_hoach_san_pham !== cauHinh?.ghiChuMacDinh) {
@@ -294,7 +295,10 @@ function moTaDong(row: ChiTieuKpiRow, tenKhach: string | null): string {
 
 function keHoachDong(row: ChiTieuKpiRow): string {
   const cauHinh = layCauHinhChiTieu(row.chi_tieu);
-  if (cauHinh?.nhom === "doanh_so") return "—";
+  if (cauHinh?.nhom === "doanh_so") {
+    const n = Number(row.chi_tiet_ke_hoach_san_pham);
+    return Number.isFinite(n) ? `${n.toLocaleString("vi-VN")} đ` : (row.chi_tiet_ke_hoach_san_pham ?? "—");
+  }
   const parts: string[] = [];
   if (row.so_luong_khach_hang_ke_hoach != null) parts.push(`${row.so_luong_khach_hang_ke_hoach} khách`);
   if (row.san_luong_ke_hoach_toi_thieu != null) parts.push(`SL tối thiểu ${row.san_luong_ke_hoach_toi_thieu}`);
