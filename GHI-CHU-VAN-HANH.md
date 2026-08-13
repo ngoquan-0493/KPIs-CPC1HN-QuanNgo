@@ -1,4 +1,4 @@
-# Ghi chú vận hành (cập nhật gần nhất: 2026-08-12)
+# Ghi chú vận hành (cập nhật gần nhất: 2026-08-13)
 
 Tài liệu này ghi lại các lỗi đã phát hiện/sửa và các việc còn tồn đọng liên quan
 đến pipeline dữ liệu (Supabase + n8n) của saleskpi-web, để phiên làm việc sau
@@ -389,3 +389,172 @@ riêng nếu muốn review qua PR trước.
   Linux x64 (môi trường sandbox, không phải lỗi code) - **cần user tự chạy
   `npm run build` hoặc `npm run dev` trên máy Windows để xác nhận UI trước khi
   push**, Cowork chưa verify được bằng mắt.
+
+## 10. Đã sửa: Cờ "Sản phẩm trọng tâm" (san_pham_trong_tam) sai/thiếu trong KPI
+
+**Triệu chứng:** khách hàng P04915, sản phẩm "pH Balance Protect Intimate Gel"
+- mục Khách hàng lấy đúng lần mua gần nhất T07/2026, nhưng mục KPI vẫn hiện
+T04/2026 và báo "Đã lặp đơn" ngay cả khi chọn Tháng 7/2026. Nguyên nhân: cột
+`san_pham_trong_tam` trên `"Du lieu sale tong"`/`"Du lieu sale thang hien tai"`
+được gán thủ công/không đồng bộ theo `ma_chuan`, nên nhiều dòng của SPTT thật
+không được đánh dấu, khiến 09a (đối chiếu lặp đơn) bỏ sót dòng gần nhất.
+
+**Đã sửa (chọn "sửa dữ liệu ngay" thay vì chỉ báo dev):**
+- Tạo bảng chuẩn `public.danh_sach_san_pham_trong_tam (ma_chuan PK, ten_sptt)`
+  - nguồn sự thật duy nhất cho danh sách SPTT, seed 7 sản phẩm (Atosiban-BFS,
+  Progermila x2 mã, Proges sup x2 mã, Propofol-BFS, pH Balance Protect).
+- Backfill toàn bộ dòng thiếu cờ trên cả 2 bảng sale (join qua
+  `danh_muc_chuan_hoa_san_pham` + bảng mới theo `ma_chuan`), verify hết 0 dòng
+  còn thiếu.
+- Sửa workflow n8n **"Pharma Mới - 03 Đồng Bộ Dữ Liệu Sale"** (id
+  `lsqapixY9MCHPe8R`): node "Đọc bảng chuẩn hóa SP" thêm join với bảng
+  `danh_sach_san_pham_trong_tam`; 2 node Code "Chuẩn hóa sale tổng"/"Chuẩn hóa
+  sale tháng hiện tại" đổi sang lấy `san_pham_trong_tam` từ map tra cứu theo
+  `ma_chuan` thay vì đọc trực tiếp cột thô hay gán tay - **từ nay thêm SKU mới
+  vào bảng `danh_sach_san_pham_trong_tam` là tự động chảy vào sale hàng ngày,
+  không cần sửa code/workflow nữa.** Đã publish workflow (xác nhận
+  `activeVersionId` khớp `versionId`).
+
+## 11. Đã xong: Hoàn thiện + merge mục Phê duyệt KPI (PR #4, #5, #6) - kèm sự cố nghiêm trọng và cách khôi phục
+
+**Yêu cầu:** mục Phê duyệt hiển thị theo "Mã NV - Tên NV", có nút Xóa (mọi
+tài khoản NV/SS/ASM) và nút Điều chỉnh (chỉ SS/ASM, sửa riêng giá trị kế
+hoạch không đổi trạng thái duyệt) - tiếp nối mục 9. Toàn bộ đã lên `main` và
+chạy đúng trên production tính đến cuối phiên 12-13/8/2026.
+
+**PR #4 (nhánh `feature/kpi-pheduyet-dieu-chinh`) - xung đột do lệch nhánh
+gốc:** nhánh tách ra từ điểm TRƯỚC KHI 2 PR fix khác (#2 nguong-nhom-hien-thi,
+#3 cong-thuc-diem-kpi) merge vào `main`, nên cùng file KPI vừa bị sửa ở
+`main` vừa bị sửa thêm ở nhánh này → GitHub báo "has conflicts". Vì
+`git checkout`/`merge` từ Cowork luôn lỗi FUSE (xem mục cuối file), đã xử lý
+bằng cách hợp nhất NỘI DUNG thủ công (lấy bản `main` mới nhất làm nền, chèn
+lại đúng phần thêm của nhánh) rồi tạo **merge commit thật sự bằng git plumbing**
+(`git write-tree` + `git commit-tree -p <tip> -p origin/main` + `git
+update-ref`) để GitHub công nhận đã hợp nhất - hợp nhất nội dung đơn thuần
+KHÔNG đủ vì 2 file này được "thêm mới độc lập" ở cả 2 nhánh (không có bản gốc
+chung), Git 3-way merge vẫn báo xung đột dù nội dung cuối đã đúng.
+
+**Sự cố ".git/index bị lệch" khi commit qua GitHub Desktop:** sau nhiều lần
+Cowork can thiệp git thủ công (đặc biệt lỗi unlink/rename do FUSE), file
+`.git/index` trên máy user bị lệch so với thực tế, khiến GitHub Desktop báo
+"Commit failed - no changes added" dù các file đã sửa đúng. Cách gỡ: xóa
+`.git/index` (KHÔNG phải `.git/index.lock`) để Git tự dựng lại từ HEAD + working
+tree. **Rủi ro:** việc dựng lại lộ ra ~2459 file rác `.netlify/...` (build
+cache của Netlify CLI) đã bị lỡ `git add` commit vào repo từ trước, xen lẫn
+~69 file dự án thật trong cùng 1 danh sách "changed files".
+
+**SỰ CỐ NGHIÊM TRỌNG - PR #5 xóa sạch project khỏi git:** khi user tự chọn
+tay từng file để tránh commit nhầm 2459 file rác `.netlify/...` nói trên,
+thao tác đã xóa nhầm CẢ các file dự án thật (`package.json`, `netlify.toml`,
+`.gitignore`, toàn bộ `src/`...) - PR #5 merge xong khiến **nhánh `main` trên
+GitHub còn 0 file được theo dõi**. Hậu quả: Netlify vẫn báo deploy "ready"
+nhưng build chỉ mất 7 giây, không có `npm install`/`next build` nào chạy (log
+"Building" chỉ có 2 dòng meta, không output), `plugin_state: none`, "No
+functions deployed" → web sập hoàn toàn dù dashboard không báo lỗi rõ ràng.
+**Cách phát hiện:** so `deploy_time` giữa các lần deploy trong danh sách
+Netlify (bản lỗi chỉ 7-13s, bản đúng luôn >= 1 phút) + `git ls-tree -r
+origin/main --name-only | wc -l` trả về 0.
+
+**Cách khôi phục (PR #6):** vì working tree trên máy user vẫn còn nguyên file
+thật (Cowork chỉ *build/sửa* trong working tree, chưa từng xóa gì), chỉ cần
+`git add -A -- . ':!.netlify'` (loại trừ đúng thư mục cache, giữ lại
+`.netlifyignore` là file thật) rồi commit thẳng - khôi phục đúng 69 file gốc +
+giữ nguyên các sửa lỗi đang làm dở (tên NV, cache `getCurrentEmployee`,
+`loading.tsx`). Verify bằng `comm` giữa danh sách file ở commit tốt cuối cùng
+(`e5a64dd`, trước PR #5) và danh sách vừa stage - khớp 1:1 (chỉ thiếu
+`deno.lock` không dùng tới, thừa đúng 1 file mới `loading.tsx`).
+
+**Bài học cho phiên sau:** KHÔNG bao giờ tự `git add -A`/chọn "Select all" khi
+GitHub Desktop hiện danh sách hàng nghìn file bất thường - luôn dừng lại,
+xác định rõ file nào THẬT sự cần thay đổi trước khi commit. Nếu thấy số
+lượng file thay đổi tăng đột biến so với dự kiến, đó là dấu hiệu cảnh báo
+sớm, không phải điều để bỏ qua.
+
+## 12. Đã sửa: RLS chặn ngầm việc SS/ASM xóa dòng KPI đã cho_duyet/da_duyet
+
+Nút "Xóa" ở mục Phê duyệt gọi đúng `xoaDongKpi()`, `assertQuanLy()` (kiểm tra
+server-side) cũng pass, nhưng RLS DELETE trên bảng `"Chi tieu KPIs"` trước đó
+CHỈ có 1 policy `"scoped delete draft"` giới hạn `trang_thai_duyet = 'nhap'`
+(dành cho NV tự xóa dòng nháp của mình). Khi SS/ASM xóa dòng đã "chờ duyệt"/
+"đã duyệt", Postgres lặng lẽ lọc mất 0 dòng bị xóa (không báo lỗi) → giao
+diện không đổi. Đã thêm policy `"scoped delete quan ly"` (SS/ASM xóa được MỌI
+trạng thái, trong phạm vi `visible_employee_codes()`) - 2 policy DELETE cộng
+theo OR nên NV vẫn chỉ xóa được dòng nháp của mình như cũ.
+
+Đồng thời sửa hiển thị thiếu tên NV ở mục Phê duyệt: danh sách `danhSachNv`
+(dùng để chọn "xây KPI thay cho ai") loại trừ vị trí ASM VÀ chỉ chứa mã đã
+chuẩn hóa (bỏ số 0 đầu), trong khi dòng KPI do chính NV tự tạo cho mình lại
+lưu mã THÔ (có số 0 đầu, lấy nguyên từ "Mã nhân viên" của `getCurrentEmployee()`)
+→ tra cứu tên bị lệch key, chỉ hiện mã. Đã bổ sung tra cứu trực tiếp cho MỌI
+mã thực sự xuất hiện trong dữ liệu Phê duyệt (không lọc vị trí), so khớp theo
+mã đã chuẩn hóa rồi gán lại đúng key thô để khớp với cách component tra cứu.
+
+## 13. Đã xong: Tối ưu hiệu năng web (Supabase + Next.js)
+
+**Vấn đề 1 - query không lọc tháng bị full scan:** RLS "scoped read" trên
+`"Du lieu sale tong"` lọc theo `norm_code(ma_nhan_vien)`/`norm_code(ma_quan_ly)`
+nhưng bảng chỉ có index trên cột thô, không có index theo biểu thức
+`norm_code(...)` → truy vấn không kèm `nam`/`thang` phải quét hết 83k dòng
+(đo thực tế: 5,1 giây). Đã thêm 2 index biểu thức
+(`idx_sales_norm_ma_nhan_vien`, `idx_sales_norm_ma_quan_ly`). Các trang hiện
+tại đa số đã lọc theo `nam`/`thang` trước nên ít bị ảnh hưởng trực tiếp, index
+này chủ yếu phòng ngừa các truy vấn không lọc phát sinh sau này.
+
+**Vấn đề 2 - view tổng hợp tính lại toàn bộ lịch sử mỗi lần load trang (thủ
+phạm chính):** `v_customer_summary` (trang Khách hàng) và `v_product_sales_summary`
+(trang Sản phẩm) là VIEW thường, `GROUP BY` trực tiếp trên toàn bộ 83k dòng
+`"Du lieu sale tong"` mỗi lần được gọi - đo thực tế 516ms và 178ms/lần, nhân
+lên nếu trang cần phân trang >1000 dòng. Đã chuyển cả 2 thành
+**MATERIALIZED VIEW** (giữ nguyên tên, không cần đổi code web), thêm index
+tương ứng, kết quả 0,3ms và 1ms (nhanh hơn 180-1700 lần). Đã bật
+**`pg_cron`**, job `refresh_v_customer_and_product_sales_summary` chạy
+**7:15 sáng hằng ngày** (00:15 UTC, sau khi n8n đồng bộ sale lúc 6:30/6:45
+sáng VN) để làm mới 2 view này. Đánh đổi: số liệu tổng hợp KH/SP không cập
+nhật real-time trong ngày, chỉ mới nhất tính đến lần refresh gần nhất - nếu
+cần đổi giờ refresh, sửa lịch cron trong Supabase (project `lfykohprunrfprityslr`).
+
+**Vấn đề 3 - chuyển trang cảm giác lâu (perceived latency):** `(app)/layout.tsx`
+gọi `getCurrentEmployee()` và không có `loading.tsx` nào trong `src/app/(app)/`
+→ Next.js không có gì để hiện ngay khi bấm chuyển mục, phải đợi toàn bộ
+server render xong mới đổi màn hình. Đã thêm `src/app/(app)/loading.tsx`
+(skeleton dùng chung cho mọi trang con) để Next.js prefetch/hiện ngay lập
+tức. Đồng thời bọc `getCurrentEmployee()` bằng React `cache()` - trước đó bị
+gọi 2 lần/lượt tải trang (1 lần ở layout, 1 lần ở chính trang) tại các trang
+kpi/customers/ai-review, mỗi lần lại tốn 2 vòng gọi Supabase riêng.
+
+## 14. Trạng thái hiện tại (chốt phiên 13/8/2026) - đọc mục này trước khi bắt đầu phiên mới
+
+**Trên máy (Windows, `C:\Users\DELL\projects\saleskpi-web`):**
+- Nhánh đang checkout trong GitHub Desktop: `feature/kpi-pheduyet-dieu-chinh`
+  (đã merge xong vào `main` qua PR #6, có thể an toàn chuyển checkout sang
+  `main` và pull để đồng bộ, hoặc xóa nhánh này nếu không còn dùng).
+- Working tree sạch, không còn thay đổi chưa commit.
+
+**Trên GitHub (`ngoquan-0493/KPIs-CPC1HN-QuanNgo`):**
+- `main` đang ở commit `0eb321d` (merge PR #6 "Khôi phục toàn bộ project bị
+  xóa nhầm khỏi git"), đã bao gồm toàn bộ PR #1-#6.
+- Repo đã sạch trở lại đúng ~69 file dự án thật, không còn lẫn file rác
+  `.netlify/...` (đã chặn qua `.gitignore` có sẵn, chỉ cần luôn cẩn thận khi
+  commit số lượng file bất thường - xem mục 11).
+
+**Trên Netlify (site `asmquanden`, https://asmquanden.netlify.app):**
+- Deploy hiện tại (`6a7c8faf48022f000856a028`) build thành công thật sự:
+  `plugin_state: success`, framework nhận đúng `next`, có 1 function
+  (`___netlify-server-handler`) + 1 edge function, thời gian build ~62s (bình
+  thường). Đã xác nhận user vào lại được web.
+- Lưu ý: `deploy_source` của các lần deploy gần đây đều ghi `"api"` thay vì
+  kiểu trigger qua webhook GitHub cổ điển - có thể chỉ là cách UI Netlify mới
+  gắn nhãn khi deploy qua nút bấm/dashboard, KHÔNG chắc chắn là bất thường,
+  nhưng nếu lần sau lại thấy build chỉ vài giây/0 function thì đây là điểm
+  đầu tiên cần nhìn lại (đối chiếu `deploy_time` trong danh sách Deploys).
+
+**Trên Supabase (project `lfykohprunrfprityslr`):**
+- Bảng mới: `danh_sach_san_pham_trong_tam` (mục 10).
+- RLS: thêm 1 policy DELETE `"scoped delete quan ly"` trên `"Chi tieu KPIs"`
+  (mục 12).
+- Index mới: `idx_sales_norm_ma_nhan_vien`, `idx_sales_norm_ma_quan_ly` trên
+  `"Du lieu sale tong"` (mục 13).
+- `v_customer_summary`, `v_product_sales_summary` đổi từ view → materialized
+  view, có `pg_cron` refresh 7:15 sáng hằng ngày (mục 13).
+- n8n workflow "Pharma Mới - 03 Đồng Bộ Dữ Liệu Sale" (`lsqapixY9MCHPe8R`) đã
+  publish bản có tra `san_pham_trong_tam` theo `ma_chuan` (mục 10).
