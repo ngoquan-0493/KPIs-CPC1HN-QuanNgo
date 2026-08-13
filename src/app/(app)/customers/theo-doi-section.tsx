@@ -185,6 +185,7 @@ export default async function TheoDoiSection({
   selectedNv,
   ssByCode,
   employees,
+  ssEmployees,
   viTriHienTai,
   maNhanVienHienTai,
 }: {
@@ -192,6 +193,7 @@ export default async function TheoDoiSection({
   selectedNv?: string;
   ssByCode: Map<string, string | null>;
   employees: { code: string; name: string; ss: string | null }[];
+  ssEmployees: { code: string; name: string }[];
   viTriHienTai: string | null;
   maNhanVienHienTai: string | null;
 }) {
@@ -208,6 +210,11 @@ export default async function TheoDoiSection({
     nvTheoSs.get(e.ss)!.push({ code: e.code, name: e.name });
   }
   for (const list of nvTheoSs.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+  // Quy doi MA SS (luu o khach_hang_master.ma_ss_phu_trach) sang TEN SS (khoa
+  // dung trong nvTheoSs o tren) - dung khi NV goc DA BI XOA HAN khoi "Danh
+  // sach nhan vien" (nghi viec) nen khong con tra duoc SS qua ssByCode nua.
+  const tenSsTheoMa = new Map<string, string>();
+  for (const e of ssEmployees) tenSsTheoMa.set(normCode(e.code), e.name);
   const supabase = await createClient();
 
   const { data: lapDonData, error: lapDonError } = await fetchAllRows<LapDonRow>((from, to) =>
@@ -277,7 +284,7 @@ export default async function TheoDoiSection({
   const maKhachList = Array.from(new Set(danhSach.map((r) => r.maKhach)));
   const { start, end } = weekBoundsTheoDoi();
 
-  const [planRes, checkinRes] = await Promise.all([
+  const [planRes, checkinRes, khachSsRes] = await Promise.all([
     maKhachList.length > 0
       ? supabase
           .from("khach_hang_theo_doi_ke_hoach")
@@ -296,6 +303,12 @@ export default async function TheoDoiSection({
             .range(from, to),
         )
       : Promise.resolve({ data: [] as CheckinRow[], error: null }),
+    // SS phu trach TUNG KHACH (co the KHAC voi ss cua NV goc neu NV goc da bi
+    // xoa khoi "Danh sach nhan vien") - dung lam phuong an du phong de van xac
+    // dinh duoc nhom SS can hien trong dropdown "Giao cho NV".
+    maKhachList.length > 0
+      ? supabase.from("khach_hang_master").select("ma_khach,ma_ss_phu_trach").in("ma_khach", maKhachList)
+      : Promise.resolve({ data: [] as { ma_khach: string; ma_ss_phu_trach: string | null }[] }),
   ]);
 
   const planByKey = new Map<string, PlanRow>();
@@ -305,6 +318,10 @@ export default async function TheoDoiSection({
   const daViengTuanNay = new Set(
     ((checkinRes as { data: CheckinRow[] | null }).data ?? []).map((c) => c.ma_khach).filter((v): v is string => !!v),
   );
+  const maSsPhuTrachByMaKhach = new Map<string, string | null>();
+  for (const k of (khachSsRes.data ?? []) as { ma_khach: string; ma_ss_phu_trach: string | null }[]) {
+    maSsPhuTrachByMaKhach.set(k.ma_khach, k.ma_ss_phu_trach);
+  }
 
   // Muc "Da hoan thanh tuan nay" (da tick + da viengly tham) mac dinh an theo
   // yeu cau: chi giu hien nhung muc CHUA dua vao lich HOAC da dua vao nhung
@@ -402,7 +419,17 @@ export default async function TheoDoiSection({
                   normCode(nvDaGiao) === normCode(item.maNhanVien)
                     ? item.tenNhanVien
                     : (tenNvTheoMa.get(normCode(nvDaGiao)) ?? null);
-                const dongNghiepCungSs = nvTheoSs.get(ssByCode.get(normCode(item.maNhanVien)) ?? "") ?? [];
+                // Uu tien tra SS qua chinh NV goc (con trong "Danh sach nhan
+                // vien"). Neu NV goc DA BI XOA HAN khoi bang do (nghi viec -
+                // truong hop pho bien nhat gay ra canh bao qua han), ssByCode
+                // se khong tim thay gi ca - fallback qua ma_ss_phu_trach cua
+                // KHACH HANG (van con luu o khach_hang_master du NV da nghi),
+                // roi quy doi ma SS -> ten SS de tra dung nhom trong nvTheoSs.
+                const tenSsCuaNvGoc =
+                  ssByCode.get(normCode(item.maNhanVien)) ??
+                  tenSsTheoMa.get(normCode(maSsPhuTrachByMaKhach.get(item.maKhach) ?? "")) ??
+                  "";
+                const dongNghiepCungSs = nvTheoSs.get(tenSsCuaNvGoc) ?? [];
                 // Luon giu NV goc trong danh sach chon (du co the da nghi
                 // viec nen khong con trong "Danh sach nhan vien" dang hoat
                 // dong/nvTheoSs) - de SS/ASM van thay ro dang giao lai TU AI,

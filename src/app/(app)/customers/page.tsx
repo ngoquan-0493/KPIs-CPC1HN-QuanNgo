@@ -145,8 +145,14 @@ export default async function CustomersPage({
   const supabase = await createClient();
   const currentEmployee = await getCurrentEmployee();
 
-  const [empRes, tongKhachRes, quaHanRes, chuaPhuTrachRes] = await Promise.all([
+  const [empRes, ssEmpRes, tongKhachRes, quaHanRes, chuaPhuTrachRes] = await Promise.all([
     supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien,ss").in("vi_tri", ["NVKD", "TTS"]),
+    // Rieng danh sach SS (ma + ten) - dung de quy doi ma_ss_phu_trach (luu o
+    // khach_hang_master) sang TEN SS, roi tra ra nhom NV cua SS do khi NV goc
+    // phu trach 1 khach-san pham DA BI XOA HAN khoi "Danh sach nhan vien" (nghi
+    // viec), nen khong the tra cuu SS qua bang NV nhu binh thuong duoc nua.
+    // Xem TheoDoiSection.
+    supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien").eq("vi_tri", "SS"),
     supabase.from("khach_hang_master").select("ma_khach", { count: "exact", head: true }),
     supabase
       .from("nhip_khach_hang")
@@ -157,6 +163,10 @@ export default async function CustomersPage({
       .select("ma_khach", { count: "exact", head: true })
       .eq("trang_thai_nhip", "unassigned_critical"),
   ]);
+
+  const ssEmployees = ((ssEmpRes.data ?? []) as { ma_nhan_vien: string; ten_nhan_vien: string | null }[]).map(
+    (e) => ({ code: e.ma_nhan_vien, name: e.ten_nhan_vien ?? e.ma_nhan_vien }),
+  );
 
   const ssByCode = new Map<string, string | null>();
   const nameByCode = new Map<string, string | null>();
@@ -330,6 +340,7 @@ export default async function CustomersPage({
           selectedNv={selectedNv}
           ssByCode={ssByCode}
           employees={employees}
+          ssEmployees={ssEmployees}
           viTriHienTai={currentEmployee?.["Vị trí"] ?? null}
           maNhanVienHienTai={currentEmployee?.["Mã nhân viên"] ?? null}
         />
