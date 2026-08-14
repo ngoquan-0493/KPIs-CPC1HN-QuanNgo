@@ -5,7 +5,7 @@ import MonthSelector from "@/components/month-selector";
 import SsFilter from "@/components/ss-filter";
 import NvFilter from "@/components/nv-filter";
 import { formatVnd, isExcludedSaleRow, fetchAllRows, preferClosedMonthRows } from "@/lib/sales-channel";
-import { ghepTenMa } from "@/lib/display";
+import { ghepTenMa, hienThiKhach } from "@/lib/display";
 import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
 import { IconClock, IconUsers } from "@/components/icons";
 import { getCurrentEmployee } from "@/lib/current-employee";
@@ -796,7 +796,7 @@ export default async function KpiPage({
                         </td>
                         <td className="py-2 pr-3 text-slate-700">
                           {k["Mã khách"]
-                            ? ghepTenMa(tenKhachByMa.get(k["Mã khách"]), k["Mã khách"])
+                            ? hienThiKhach(tenKhachByMa.get(k["Mã khách"]), k["Mã khách"])
                             : "—"}
                         </td>
                         <td className="py-2 pr-3 text-slate-700">

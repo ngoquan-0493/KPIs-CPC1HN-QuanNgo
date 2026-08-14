@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
-import { ghepTenMa } from "@/lib/display";
+import { ghepTenMa, hienThiKhach } from "@/lib/display";
 
 type DetailRow = {
   ma_khach: string;
@@ -119,7 +119,7 @@ export default function MoMoiSpttDetail({
                 {rows.map((r, i) => (
                   <tr key={i} className="border-t border-slate-200">
                     <td className="py-1 pr-2 text-slate-900">
-                      {ghepTenMa(tenKhachByMa.get(r.ma_khach), r.ma_khach)}
+                      {hienThiKhach(tenKhachByMa.get(r.ma_khach), r.ma_khach)}
                     </td>
                     <td className="py-1 pr-2 text-slate-700">{r.loai}</td>
                     <td className="py-1 pr-2 text-slate-700">{r.so_luong}</td>

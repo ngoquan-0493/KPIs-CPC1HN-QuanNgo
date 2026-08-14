@@ -513,6 +513,13 @@ sáng VN) để làm mới 2 view này. Đánh đổi: số liệu tổng hợp 
 nhật real-time trong ngày, chỉ mới nhất tính đến lần refresh gần nhất - nếu
 cần đổi giờ refresh, sửa lịch cron trong Supabase (project `lfykohprunrfprityslr`).
 
+**⚠️ ĐÃ SUPERSEDE - xem mục 15.2:** quyết định "chuyển sang materialized view +
+cron 7:15" ở trên đã bị đảo ngược trong phiên 13/8/2026 (chiều) vì phát hiện
+lỗi nghiêm trọng hơn (thiếu hẳn dữ liệu tháng đang chạy). Cả `v_customer_summary`
+và `v_product_sales_summary` đã đổi LẠI thành VIEW thường (live, không cache),
+job `pg_cron` nói trên đã bị `unschedule`. Đọc mục 15.2 để biết lý do và trạng
+thái mới nhất trước khi động vào 2 view này.
+
 **Vấn đề 3 - chuyển trang cảm giác lâu (perceived latency):** `(app)/layout.tsx`
 gọi `getCurrentEmployee()` và không có `loading.tsx` nào trong `src/app/(app)/`
 → Next.js không có gì để hiện ngay khi bấm chuyển mục, phải đợi toàn bộ
@@ -558,3 +565,201 @@ kpi/customers/ai-review, mỗi lần lại tốn 2 vòng gọi Supabase riêng.
   view, có `pg_cron` refresh 7:15 sáng hằng ngày (mục 13).
 - n8n workflow "Pharma Mới - 03 Đồng Bộ Dữ Liệu Sale" (`lsqapixY9MCHPe8R`) đã
   publish bản có tra `san_pham_trong_tam` theo `ma_chuan` (mục 10).
+
+## 15. Đã sửa: 4 lỗi liên hoàn quanh "dữ liệu tháng hiện tại" và mã nhân viên thiếu số 0 (phiên chiều-tối 13/8/2026)
+
+Cùng 1 buổi làm việc, phát hiện chuỗi lỗi có liên quan tới nhau (đều xoay
+quanh việc gộp/khớp dữ liệu giữa các bảng), ghi lại đầy đủ để lần sau không
+phải điều tra lại.
+
+### 15.1 Đã sửa: Cảnh báo "cần lặp đơn" bị trùng dòng cho cùng 1 khách-sản phẩm
+
+**Triệu chứng:** tab "Khách hàng cần theo dõi" hiện CÙNG 1 khách + CÙNG 1 sản
+phẩm ở 2 dòng khác nhau, mức độ cảnh báo khác nhau (vd vừa "Khẩn" vừa "Ưu
+tiên").
+
+**Nguyên nhân:** workflow n8n **"Pharma - Sinh Chỉ Tiêu Lặp Đơn Tháng"** (id
+`vjPKibmlv8wIXhH9`, node "Sinh Chỉ Tiêu Lặp Đơn (SQL)", ghi vào bảng
+`phan_loai_khach_hang_can_lap_don`) nhóm lịch sử mua hàng theo BỘ BA `(mã nhân
+viên, mã khách, mã sản phẩm)` thay vì chỉ `(mã khách, mã sản phẩm)`. Khi 1
+cặp khách-sản phẩm có đơn hàng được ghi nhận dưới 2 mã nhân viên khác nhau
+theo thời gian (SS bán trực tiếp trước khi bàn giao cho NV, hoặc NV cũ nghỉ
+việc/NV mới tiếp nhận), hệ thống tính "còn sống hay mồ côi" riêng cho TỪNG mã
+nhân viên - ra 2 dòng cảnh báo trái ngược cho cùng 1 thực thể.
+
+**Đã sửa (dán tay SQL vào n8n UI - xem lý do ở cuối mục 15.4):**
+- Gộp lịch sử theo `(mã khách, mã sản phẩm CHUẨN HÓA - COALESCE(ma_chuan,
+  ma_hang))` bất kể mã nhân viên nào bán, để xác định đúng 1 trạng thái
+  Khẩn/Ưu tiên/Mồ côi/Sống duy nhất cho mỗi cặp.
+- Gán cảnh báo cho nhân viên bán ĐƠN GẦN NHẤT, ưu tiên người còn đang hoạt
+  động (join `"Danh sach nhan vien"`); nếu cặp đó chưa từng được bán bởi ai
+  còn hoạt động thì fallback về nhân viên của đơn gần nhất bất kể còn làm hay
+  không (UI "Giao cho NV" ở mục Khách hàng đã có sẵn cơ chế xử lý mã nhân viên
+  đã nghỉ việc).
+- Mở rộng phạm vi khách hàng xét tới: trước đây chỉ tính khách có đơn được
+  ghi bởi 1 nhân viên CÒN trong `"Danh sach nhan vien"`, khiến khách mà TOÀN
+  BỘ lịch sử là của nhân viên đã nghỉ việc bị loại khỏi tính toán hoàn toàn.
+  Đã nới thêm điều kiện `khach_hang_master.thuoc_nhom_asm = true` (OR logic)
+  để không bỏ sót nhóm này - đúng theo yêu cầu gốc của user ("ảnh hưởng nhiều
+  vì nhân viên nghỉ việc khá nhiều").
+- Gặp lỗi runtime khi chạy thử: cột `nhom_ss` trong
+  `phan_loai_khach_hang_can_lap_don` là NOT NULL, nhưng khi nhân viên được
+  gán là người đã nghỉ việc thì tra `"Danh sach nhan vien".ss` ra NULL. Đã
+  thêm fallback 3 lớp: tên SS của nhân viên → tên SS phụ trách khách hàng đó
+  (qua `khach_hang_master.ma_ss_phu_trach`) → chuỗi rỗng.
+- Đã verify (phiên 14/8/2026, đối chiếu lại trực tiếp trên Supabase): chạy
+  lại workflow, 220 dòng cảnh báo T8/2026, **0 dòng trùng** theo cặp (mã
+  khách, mã sản phẩm) - đúng như kỳ vọng. Với 2 khách nêu trong báo cáo gốc
+  của user: **P19065** đã ra khỏi danh sách cảnh báo hoàn toàn (gộp lại thì
+  "còn sống"). **P16622** thì KHÔNG - vẫn còn đúng 1 dòng cảnh báo hợp lệ
+  (trước đây bị trùng 2 dòng cảnh báo trái ngược cho cùng 1 cặp, giờ đã gộp
+  đúng về 1 dòng duy nhất) - mức "Mồ côi", sản phẩm Proges sup 400mg, đơn
+  gần nhất T3/2026, tức khách này thực sự đang cần lặp đơn chứ không phải
+  "còn sống". Bài học: khi verify fix khử trùng lặp, kỳ vọng đúng phải là
+  "còn ĐÚNG 1 dòng" cho mỗi cặp, không phải "hết dòng nào" - 2 việc khác
+  nhau, dễ nhầm khi viết ghi chú vội.
+
+### 15.2 Đã sửa: 3 view tổng hợp thiếu hẳn dữ liệu tháng đang chạy (tháng hiện tại "biến mất")
+
+**Triệu chứng:** tra cứu khách hàng bất kỳ → "Xem sản phẩm đã mua" không hiện
+đơn hàng tháng 8; "Tổng lũy kế" dưới tên khách cũng thiếu tháng 8.
+
+**Nguyên nhân:** `v_customer_product_summary`, `v_customer_summary`,
+`v_product_sales_summary` (3 view/materialized view tổng hợp dùng ở trang
+Khách hàng + Sản phẩm) đều **CHỈ** `SELECT` từ `"Du lieu sale tong"` (bảng đã
+chốt sổ) - hoàn toàn không có `"Du lieu sale thang hien tai"` (bảng tháng
+đang chạy) trong định nghĩa. Vì tháng hiện tại luôn nằm ở bảng thứ 2, các
+view này KHÔNG BAO GIỜ thấy được tháng đang chạy, bất kể có refresh bao
+nhiêu lần. 2/3 view này còn là **MATERIALIZED VIEW** (quyết định ở mục 13,
+refresh 1 lần/ngày lúc 7:15 sáng qua `pg_cron`) nên cộng thêm 1 lớp trễ nữa
+ngay cả với tháng đã chốt.
+
+**Đã sửa:** viết lại cả 3 view, UNION thêm `"Du lieu sale thang hien tai"`
+cho các tháng CHƯA có trong `"Du lieu sale tong"` (dùng logic giống hệt
+`mergeSaleRowsByMonth()` ở tầng code - so theo cặp `(nam, thang)`, tránh đếm
+trùng nếu 1 tháng lỡ tồn tại ở cả 2 bảng cùng lúc), đồng thời lọc bỏ
+"TraHang"/"Hủy"/"Huỷ"/"Treo" nhất quán với quy ước cả app đang dùng.
+**Đồng thời đảo ngược quyết định ở mục 13:** chuyển `v_customer_summary` và
+`v_product_sales_summary` từ materialized view **về lại VIEW thường** (luôn
+live, không cần refresh) - vì với quy mô dữ liệu hiện tại (~83k+400 dòng),
+GROUP BY trực tiếp đủ nhanh, và ưu tiên đúng số liệu real-time quan trọng
+hơn phần trăm mili-giây tiết kiệm được. Đã `cron.unschedule()` job
+`refresh_v_customer_and_product_sales_summary` (jobid 1) và xóa unique index
+cũ trên `v_customer_summary` (không còn cần vì không phải matview nữa).
+Đã verify bằng dữ liệu thực tế tháng 8 (đối chiếu `ngay_mua_gan_nhat` ra
+đúng ngày đơn hàng tháng 8 gần nhất).
+
+### 15.3 Đã sửa: Workflow tính KPI "Đạt" nhưng bấm vào không thấy khách hàng đóng góp
+
+**Triệu chứng:** tab Tiến độ KPI, các dòng "Code mới"/"Mở mới SPTT"/"Mở mới"
+báo "Đạt" nhưng bấm vào hiện "Chưa có khách hàng nào đóng góp vào kết quả
+này".
+
+**Nguyên nhân:** chỉ đúng với chỉ tiêu **"Mở mới" (sản phẩm cấp 2, bảng chi
+tiết `chi_tiet_mo_moi`)**. Workflow **"Pharma Moi - 09a Tinh KPI Code Moi, Mo
+Moi SPTT, Duy Tri SPTT"** (id `gvJit6alk5aqjrvH`) có 1 bản DRAFT (đã lưu
+nhưng CHƯA publish) chứa thêm 2 node "Xóa/Ghi chi tiết Mở mới" để ghi vào
+bảng `chi_tiet_mo_moi` - nhưng bản ACTIVE (đang thực sự chạy hằng ngày 7h
+sáng) hoàn toàn KHÔNG có 2 node này trong danh sách node (không phải bị tắt/
+disconnect - node không tồn tại trong bản active). Hậu quả: node "Tính KPI Mở
+mới" (UPDATE trực tiếp `"Chi tieu KPIs".so_luong_thuc_hien`) vẫn chạy đúng và
+báo "Đạt" như thường, nhưng bảng chi tiết theo từng khách hàng không bao giờ
+được ghi - execution vẫn báo `status: success` (không có lỗi hiển thị) vì
+n8n coi việc "không chạy 1 node do nó không tồn tại trong bản active" là bình
+thường, không phải lỗi.
+
+**Cách phát hiện:** so `workflow.versionId` (draft) khác `workflow.
+activeVersionId` (đang chạy), rồi so số lượng node trong `workflow.nodes`
+(17 node, có "Xóa/Ghi chi tiết Mở mới") với `workflow.activeVersion.nodes`
+(chỉ 15 node, thiếu đúng 2 node đó) - xem thêm ghi chú kỹ thuật ở mục 5 và
+15.4 về việc luôn phải đối chiếu 2 danh sách này.
+
+**Đã sửa:** gọi `publish_workflow` (không kèm `versionId` = publish bản
+draft mới nhất), sau đó `execute_workflow` lại 1 lần để backfill ngay dữ
+liệu tháng 8 còn thiếu. Đã verify: 6/6 dòng "Code mới", 10/10 "Mở mới SPTT",
+33/33 "Mở mới" (T8/2026) có "Đạt" đều đã tra được đúng danh sách khách hàng
+đóng góp.
+
+### 15.4 Đã sửa: ~100 khách hàng "biến mất" hoàn toàn khỏi web do mã nhân viên thiếu số 0 đầu trong dữ liệu lịch sử
+
+**Triệu chứng khởi phát:** mã khách hàng cụ thể (P23225) tìm không ra ở CẢ
+mục KPI lẫn mục Khách hàng, dù có đơn hàng thật trong tháng 7/2026.
+
+**Nguyên nhân:** `khach_hang_master` (bảng "Khách hàng") được đồng bộ dựa
+trên việc khớp CHÍNH XÁC `ma_nhan_vien` giữa `"Du lieu sale tong"` và
+`"Danh sach nhan vien"`. Rà toàn bộ `"Du lieu sale tong"` phát hiện **5.942
+dòng** (~7% tổng 83.244 dòng, trải dài từ 2023 đến tận 31/7/2026) có
+`ma_nhan_vien` bị THIẾU SỐ 0 ĐẦU (vd `"18166"` thay vì `"018166"`) - nhiều
+khả năng do Google Sheets tự ép cột này thành kiểu số ở một số dòng, làm rụng
+số 0. Hậu quả: đúng **100 khách hàng** có 100% lịch sử dính lỗi này, nên
+không bao giờ khớp được với nhân viên nào → không bao giờ được đưa vào
+`khach_hang_master` → biến mất khỏi mọi trang tra cứu (vì hầu hết trang đều
+dựa trên bảng này, không phải trực tiếp trên bảng sale).
+
+**Tin quan trọng: lỗi gốc đã được vá sẵn từ TRƯỚC phiên này** (không phải do
+phiên này sửa) - workflow **"Pharma Mới - 03 Đồng Bộ Dữ Liệu Sale"**
+(`lsqapixY9MCHPe8R`) đã có hàm `padCode()` tự thêm số 0 khi đọc cột "Mã nhân
+viên" từ Google Sheets, publish lúc **12/8/2026, 8h34 sáng**. Đối chiếu
+`updated_at`: dòng lỗi gần nhất được ghi lúc 8h13 (21 phút TRƯỚC khi bản vá
+lên), và **0 dòng lỗi mới** phát sinh từ 8h34 12/8 trở đi. Nghĩa là dữ liệu
+mới (kể cả tháng 8 hiện tại) đã sạch, chỉ còn dữ liệu lịch sử cũ cần dọn.
+
+**Đã dọn dữ liệu lịch sử (có xác nhận trước từ user):**
+- Trong 5.942 dòng lỗi (100 mã nhân viên khác định dạng), tách làm 2 nhóm
+  sau khi thêm số 0 rồi đối chiếu `"Danh sach nhan vien"`:
+  - **31 mã (2.023 dòng, ảnh hưởng 34 khách hàng gồm P23225):** sau khi thêm
+    số 0 khớp ĐÚNG với 1 nhân viên ĐANG hoạt động → **UPDATE trực tiếp**
+    `"Du lieu sale tong".ma_nhan_vien = lpad(trim(ma_nhan_vien), 6, '0')` cho
+    đúng 2.023 dòng này (đã lọc chặt bằng `EXISTS` để không sửa nhầm dòng nào
+    không khớp).
+  - **59 mã (3.898 dòng):** sau khi thêm số 0 KHÔNG khớp ai trong danh sách
+    hiện tại (nhân viên đã nghỉ việc/bị xóa hẳn khỏi bảng) - **CHƯA sửa**,
+    để nguyên vì không đủ căn cứ gán cho ai.
+  - Loại trừ ~10 mã dạng `TTS00xxx` (8 ký tự, không phải mã 6 số thiếu 0 -
+    thuộc hệ mã khác, không liên quan lỗi này) khỏi mọi thao tác sửa.
+- Sau khi sửa `"Du lieu sale tong"`, `INSERT` bổ sung vào `khach_hang_master`
+  cho TOÀN BỘ (100/100, không chỉ 34) mã khách còn thiếu - dùng đúng logic
+  aggregate mà node "Tổng hợp Customer Master từ sale" trong workflow 03
+  đang dùng (tên/nhóm/tỉnh lấy từ đơn gần nhất, `ma_nhan_vien_phu_trach` =
+  người bán đơn gần nhất, `ngay_mua_dau`/`ngay_mua_gan_nhat` = min/max ngày).
+  66 khách còn lại (nhóm mã chưa sửa được) vẫn được thêm vào với
+  `ma_nhan_vien_phu_trach` là mã CHƯA chuẩn hóa (không tra được ai) - ít
+  nhất khách đã hiện ra thay vì biến mất hoàn toàn, UI "Giao cho NV" ở mục
+  Khách hàng xử lý được trường hợp mã nhân viên không khớp ai.
+- **`"Du lieu sale thang hien tai"` đã kiểm tra sạch (0 dòng lỗi)** - hợp lý
+  vì bảng này bị xóa sạch và nạp lại MỖI NGÀY bằng code đã có `padCode()`.
+- Đã verify: P23225 hiện đúng trong `khach_hang_master` (Đậu Phương Nhật -
+  020124 phụ trách), tổng số khách còn thiếu trong `khach_hang_master` giảm
+  từ 100 → 0.
+
+**Còn tồn đọng:** 59 mã nhân viên (3.898 dòng, gắn với 66 khách hàng) thuộc
+nhân viên đã nghỉ việc - chưa có cách xác định họ là ai để chuẩn hóa mã. Nếu
+sau này cần, có thể tra cứu chéo qua lịch sử `"Danh sach nhan vien"` cũ hơn
+(nếu còn lưu ở đâu đó ngoài Supabase) hoặc hỏi trực tiếp SS phụ trách khu
+vực/thời điểm đó.
+
+### Ghi chú kỹ thuật quan trọng: MCP n8n `update_workflow` bị chặn quyền suốt cả phiên
+
+Khác với các phiên trước (nơi `update_workflow` thường chỉ cần user reconnect
+connector là qua), phiên này `update_workflow` báo lỗi **"This connector
+requires additional permissions"** liên tục, kể cả SAU KHI user đã reconnect
+n8n (thử lại 2 lần, vẫn lỗi y hệt). Ngược lại, `get_workflow_details`,
+`execute_workflow`, `publish_workflow` đều hoạt động bình thường suốt phiên -
+tức là đây là giới hạn CHỈ trên thao tác ghi cấu trúc workflow
+(`update_workflow`), không phải toàn bộ kết nối n8n bị mất quyền.
+
+**Cách xử lý đã dùng:** đưa nguyên văn câu SQL cho user tự dán vào n8n UI
+(node "Sinh Chỉ Tiêu Lặp Đơn (SQL)", xem mục 15.1) - user tự Save + Publish.
+Gặp thêm 1 vòng lặp: lần chạy đầu tiên báo lỗi `null value in column
+"nhom_ss" violates not-null constraint` (vì logic mới cho phép gán cảnh báo
+cho nhân viên đã nghỉ việc, phá vỡ giả định cũ là `ma_nhan_vien` luôn tra
+được SS) - đã đưa bản SQL sửa lần 2 (thêm fallback nhóm SS) cho user dán lại,
+lần này chạy thành công.
+
+**Bài học:** khi `update_workflow` bị chặn, không nên giả định user reconnect
+là đủ - cần kiểm tra bằng cách thử lại thao tác thực tế trước khi kết luận đã
+qua được, và chuẩn bị sẵn phương án "đưa SQL cho user dán tay" như một lựa
+chọn chính chứ không phải phương án cuối cùng khi bí. Ngoài ra: các thao tác
+CHỈ ĐỌC (`execute_workflow` để chạy thử, `get_execution` để xem log/lỗi thật
+sự trong Supabase) vẫn luôn dùng được ngay cả khi bị chặn ghi - nên tận dụng
+để tự kiểm chứng kết quả thay vì chỉ dựa vào lời user báo lại.

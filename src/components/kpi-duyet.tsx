@@ -397,6 +397,10 @@ export default function KpiDuyet({
   const [tenKhachMap, setTenKhachMap] = useState<Record<string, string>>(tenKhachBanDau);
   const [loading, setLoading] = useState(false);
   const [isPending, startTransition] = useTransition();
+  // Loc theo ten nhan vien - chi loc TRONG PHAM VI da duoc RLS scope san
+  // (SS chi thay NV nhom minh, ASM thay ca team quan ly), khong phai loc
+  // toan cong ty. "" = khong loc, hien tat ca.
+  const [locNhanVien, setLocNhanVien] = useState("");
 
   const thangOptions = useMemo(
     () => [thangSauNay(-1), thangHomNay(), thangSauNay(1)].filter((v, i, a) => a.indexOf(v) === i),
@@ -446,8 +450,23 @@ export default function KpiDuyet({
     });
   }
 
-  const tongSoDong = groups.reduce((s, g) => s + g.rows.length, 0);
-  const tongChoDuyet = groups.reduce(
+  // Danh sach nhan vien de loc - lay tu chinh cac group dang co (da duoc
+  // RLS scope san theo nguoi dang dang nhap: SS chi thay NV nhom minh, ASM
+  // thay ca team), sap xep theo ten cho de quet. "" = khong loc (Tat ca).
+  const nvOptions = useMemo(
+    () =>
+      groups
+        .map((g) => ({ code: g.ma_nhan_vien, ten: tenNhanVienMap[g.ma_nhan_vien] ?? g.ma_nhan_vien }))
+        .sort((a, b) => a.ten.localeCompare(b.ten, "vi")),
+    [groups, tenNhanVienMap],
+  );
+  const groupsHienThi = useMemo(
+    () => (locNhanVien ? groups.filter((g) => g.ma_nhan_vien === locNhanVien) : groups),
+    [groups, locNhanVien],
+  );
+
+  const tongSoDong = groupsHienThi.reduce((s, g) => s + g.rows.length, 0);
+  const tongChoDuyet = groupsHienThi.reduce(
     (s, g) => s + g.rows.filter((r) => r.trang_thai_duyet === "cho_duyet").length,
     0,
   );
@@ -469,21 +488,40 @@ export default function KpiDuyet({
             ))}
           </select>
         </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-slate-500">Nhân viên</label>
+          <select
+            value={locNhanVien}
+            onChange={(e) => setLocNhanVien(e.target.value)}
+            className={inputClass}
+          >
+            <option value="">Tất cả nhân viên ({nvOptions.length})</option>
+            {nvOptions.map((nv) => (
+              <option key={nv.code} value={nv.code}>
+                {nv.ten}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <SectionHeading
         title="Chỉ tiêu KPI theo nhân viên"
-        description={`${formatThang(thang)} · ${groups.length} nhân viên · ${tongSoDong} dòng (${tongChoDuyet} đang chờ duyệt)`}
+        description={`${formatThang(thang)} · ${groupsHienThi.length} nhân viên · ${tongSoDong} dòng (${tongChoDuyet} đang chờ duyệt)`}
       />
 
       {loading && <p className="text-sm text-slate-400">Đang tải…</p>}
 
-      {!loading && groups.length === 0 && (
-        <EmptyState>Chưa có chỉ tiêu KPI nào cho {formatThang(thang).toLowerCase()}.</EmptyState>
+      {!loading && groupsHienThi.length === 0 && (
+        <EmptyState>
+          {groups.length === 0
+            ? `Chưa có chỉ tiêu KPI nào cho ${formatThang(thang).toLowerCase()}.`
+            : "Không có chỉ tiêu KPI nào của nhân viên này trong tháng đã chọn."}
+        </EmptyState>
       )}
 
       <div className="space-y-4">
-        {groups.map((g) => {
+        {groupsHienThi.map((g) => {
           const soDongChoDuyet = g.rows.filter((r) => r.trang_thai_duyet === "cho_duyet").length;
           return (
             <Card key={g.ma_nhan_vien} padding="p-4">
