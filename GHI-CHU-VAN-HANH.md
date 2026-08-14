@@ -522,6 +522,56 @@ tức. Đồng thời bọc `getCurrentEmployee()` bằng React `cache()` - trư
 gọi 2 lần/lượt tải trang (1 lần ở layout, 1 lần ở chính trang) tại các trang
 kpi/customers/ai-review, mỗi lần lại tốn 2 vòng gọi Supabase riêng.
 
+## 15. Đã sửa: NV mới (Trần Thị Kim Oanh) không đăng nhập được - lỗi NULL token trong auth.users (14/8/2026)
+
+**Triệu chứng:** Web báo "Email hoặc mật khẩu không đúng" dù nhập đúng mật khẩu.
+
+**Nguyên nhân thật:** Không phải sai mật khẩu. Dòng của chị Oanh trong
+`auth.users` có giá trị NULL ở các cột token nội bộ của GoTrue
+(`confirmation_token`, `recovery_token`, `email_change_token_new`,
+`email_change_token_current`, `email_change`, `phone_change`,
+`phone_change_token`, `reauthentication_token`) thay vì chuỗi rỗng `''`. GoTrue
+dùng Go's `sql.Scan` để đọc các cột này khi tra cứu user lúc đăng nhập - nếu
+gặp NULL sẽ crash với lỗi "converting NULL to string is unsupported", trả về
+HTTP 500. Trang `/login` (`src/app/login/page.tsx`) bắt mọi lỗi Supabase Auth
+và hiển thị chung chung "Email hoặc mật khẩu không đúng", nên lỗi 500 này bị
+ngụy trang thành lỗi sai mật khẩu.
+
+**Đã kiểm tra:** Không có bản ghi nào trong `auth.audit_log_entries` cho tài
+khoản này, và không có execution n8n nào (workflow "01 Đồng Bộ Danh Sách Nhân
+Sự", "02 Xử Lý Biến Động Nhân Sự", hay bất kỳ workflow nào khác) chạy quanh
+thời điểm tài khoản được tạo (07:28 UTC 14/8). Kết luận: tài khoản này được
+tạo bằng INSERT SQL thủ công (giống cách tạo 7 tài khoản còn thiếu hôm 11/8),
+không qua workflow tự động nào - lần này bước tạo bị thiếu gán chuỗi rỗng cho
+các cột token.
+
+**Đã sửa:**
+```sql
+UPDATE auth.users
+SET confirmation_token = coalesce(confirmation_token, ''),
+    recovery_token = coalesce(recovery_token, ''),
+    email_change_token_new = coalesce(email_change_token_new, ''),
+    email_change_token_current = coalesce(email_change_token_current, ''),
+    email_change = coalesce(email_change, ''),
+    phone_change = coalesce(phone_change, ''),
+    phone_change_token = coalesce(phone_change_token, ''),
+    reauthentication_token = coalesce(reauthentication_token, '')
+WHERE id = '9e3291ef-c1a2-45f0-a55e-d362f3d5ae47';
+```
+
+**Lưu ý cho lần sau:** Nếu cần tạo tài khoản `auth.users` thủ công qua SQL cho
+nhân viên mới (thay vì qua Supabase Dashboard "Invite user" / Admin API - cách
+này tự set đúng các cột), LUÔN gán `''` (không để mặc định/NULL) cho toàn bộ 8
+cột token ở trên. Có thể chạy nhanh câu lệnh kiểm tra hàng loạt trước khi báo
+"đã xong":
+```sql
+select id, email from auth.users
+where confirmation_token is null or recovery_token is null
+   or email_change_token_new is null or email_change_token_current is null
+   or email_change is null or phone_change is null
+   or phone_change_token is null or reauthentication_token is null;
+```
+
 ## 14. Trạng thái hiện tại (chốt phiên 13/8/2026) - đọc mục này trước khi bắt đầu phiên mới
 
 **Trên máy (Windows, `C:\Users\DELL\projects\saleskpi-web`):**
