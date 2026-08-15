@@ -2,73 +2,31 @@ import { createClient } from "@/lib/supabase/server";
 import PeriodPicker from "@/components/period-picker";
 import SsFilter from "@/components/ss-filter";
 import NvFilter from "@/components/nv-filter";
-import {
-  formatVnd,
-  normalizeChannel,
-  isExcludedSaleRow,
-  fetchAllRows,
-  preferClosedMonthRows,
-} from "@/lib/sales-channel";
+import { formatVnd } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, SectionHeading, EmptyState, StatCard } from "@/components/ui";
 import { IconWallet, IconReceipt, IconUsers } from "@/components/icons";
 
-type SaleRow = {
-  ma_nhan_vien: string | null;
-  ten_nhan_vien: string | null;
-  ten_san_pham_chuan_hoa: string | null;
-  ten_khach: string | null;
-  ma_khach: string | null;
-  tinh: string | null;
-  ngay: string | null;
-  doanh_thu: number | null;
-  nhom_khach_hang: string | null;
-  trang_thai?: string | null;
-};
-
 type EmployeeSsRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
 
-function topN(rows: SaleRow[], key: keyof SaleRow, n: number) {
-  const totals = new Map<string, number>();
-  for (const r of rows) {
-    const k = (r[key] as string) || "Không xác định";
-    totals.set(k, (totals.get(k) ?? 0) + (r.doanh_thu ?? 0));
-  }
-  return [...totals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n);
-}
-
-// Rieng top NV can kem ma de tien tra cuu - gop theo ma_nhan_vien (chuan
-// hoa) thay vi ten, vi ten co the trung nhau giua cac NV khac nhau.
-function topNvByRevenue(rows: SaleRow[], n: number) {
-  const totals = new Map<string, { name: string; value: number }>();
-  for (const r of rows) {
-    const code = normCode(r.ma_nhan_vien) || "khong_xac_dinh";
-    const cur = totals.get(code) ?? { name: r.ten_nhan_vien || "Không xác định", value: 0 };
-    cur.value += r.doanh_thu ?? 0;
-    if (r.ten_nhan_vien) cur.name = r.ten_nhan_vien;
-    totals.set(code, cur);
-  }
-  return [...totals.entries()]
-    .map(([code, { name, value }]) => [ghepTenMa(name, code), value] as [string, number])
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, n);
-}
-
 type ChannelStat = { channel: string; revenue: number; orders: number };
+type DashboardNv = { code: string; name: string; revenue: number };
+type DashboardSp = { name: string; revenue: number };
 
-function channelBreakdown(rows: SaleRow[]): ChannelStat[] {
-  const map = new Map<string, ChannelStat>();
-  for (const r of rows) {
-    const channel = normalizeChannel(r.nhom_khach_hang);
-    const cur = map.get(channel) ?? { channel, revenue: 0, orders: 0 };
-    cur.revenue += r.doanh_thu ?? 0;
-    cur.orders += 1;
-    map.set(channel, cur);
-  }
-  return [...map.values()].sort((a, b) => b.revenue - a.revenue);
-}
+// Ket qua tra ve tu RPC get_sales_dashboard (Postgres function) - toan bo
+// phan cong don/xep hang chay trong Postgres, page nay chi con nhan vai chuc
+// dong ket qua da tong hop thay vi tai toan bo dong ban hang tho ve roi cong
+// don bang JS (truoc day co the la vai nghin dong/thang). Xem migration
+// "add_sales_dashboard_helpers_and_rpc".
+type SalesDashboard = {
+  source: "tong" | "hien_tai";
+  tong_doanh_thu: number;
+  so_don: number;
+  so_khach: number;
+  channels: ChannelStat[];
+  top_nv: DashboardNv[];
+  top_sp: DashboardSp[];
+};
 
 const CHANNEL_DOT: Record<string, string> = {
   "Kê đơn": "bg-blue-600",
@@ -99,30 +57,18 @@ export default async function SalesPage({
 
   const supabase = await createClient();
 
-  // "Du lieu sale tong" holds historical months; "Du lieu sale thang hien tai"
-  // holds the live, currently-in-progress month. Merge both so the selected
-  // period always shows data regardless of which table it lives in.
-  const [tongRes, hienTaiRes, empRes] = await Promise.all([
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase
-        .from("Du lieu sale tong")
-        .select(
-          "ma_nhan_vien,ten_nhan_vien,ten_san_pham_chuan_hoa,ten_khach,ma_khach,tinh,ngay,doanh_thu,nhom_khach_hang",
-        )
-        .eq("nam", nam)
-        .eq("thang", thang)
-        .range(from, to),
-    ),
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase
-        .from("Du lieu sale thang hien tai")
-        .select(
-          "ma_nhan_vien,ten_nhan_vien,ten_san_pham_chuan_hoa,ten_khach,ma_khach,tinh,ngay,doanh_thu,nhom_khach_hang,trang_thai",
-        )
-        .eq("nam", nam)
-        .eq("thang", thang)
-        .range(from, to),
-    ),
+  // Tong hop chay het trong Postgres (RPC get_sales_dashboard) - giu nguyen
+  // logic "sale tong" (thang da chot so) uu tien hon "sale thang hien tai",
+  // loai TraHang/Huy/Treo, gop kenh/NV/SP - chi khac la cong don ngay trong
+  // DB thay vi tai het dong tho ve JS. Danh sach NV van tai rieng (bang nho,
+  // ~vai chuc dong) de dung cho 2 dropdown loc SS/NV.
+  const [dashRes, empRes] = await Promise.all([
+    supabase.rpc("get_sales_dashboard", {
+      p_nam: nam,
+      p_thang: thang,
+      p_ss: selectedSs ?? null,
+      p_nv: selectedNv ?? null,
+    }),
     supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien,ss").neq("vi_tri", "ASM"),
   ]);
 
@@ -141,26 +87,20 @@ export default async function SalesPage({
     .map(([code, name]) => ({ code, name: name ?? code }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const error = tongRes.error ?? hienTaiRes.error ?? empRes.error;
-  let rows = preferClosedMonthRows(
-    (tongRes.data ?? []) as SaleRow[],
-    (hienTaiRes.data ?? []) as SaleRow[],
-  ).filter((r) => !isExcludedSaleRow(r));
-  if (selectedSs) {
-    rows = rows.filter((r) => ssByCode.get(normCode(r.ma_nhan_vien)) === selectedSs);
-  }
-  if (selectedNv) {
-    rows = rows.filter((r) => normCode(r.ma_nhan_vien) === selectedNv);
-  }
-  const tongDoanhThu = rows.reduce((s, r) => s + (r.doanh_thu ?? 0), 0);
-  const soDon = rows.length;
-  const soKhach = new Set(rows.map((r) => r.ma_khach).filter(Boolean)).size;
+  const error = dashRes.error ?? empRes.error;
+  const dash = (dashRes.data ?? null) as SalesDashboard | null;
 
-  const topNV = topNvByRevenue(rows, 8);
-  const topSP = topN(rows, "ten_san_pham_chuan_hoa", 8);
+  const tongDoanhThu = dash?.tong_doanh_thu ?? 0;
+  const soDon = dash?.so_don ?? 0;
+  const soKhach = dash?.so_khach ?? 0;
+  const channels = dash?.channels ?? [];
+
+  const topNV = (dash?.top_nv ?? []).map(
+    (n) => [ghepTenMa(n.name, n.code), n.revenue] as [string, number],
+  );
+  const topSP = (dash?.top_sp ?? []).map((s) => [s.name, s.revenue] as [string, number]);
   const maxNV = Math.max(1, ...topNV.map(([, v]) => v));
   const maxSP = Math.max(1, ...topSP.map(([, v]) => v));
-  const channels = channelBreakdown(rows);
 
   return (
     <div className="mx-auto max-w-[1600px] p-6 lg:p-8">
