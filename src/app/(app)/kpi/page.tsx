@@ -152,8 +152,11 @@ const TRAN_DIEM: Record<string, number> = {
   // "Doanh số kê đơn - phòng mạch": khong gioi han (khong co trong bang nay).
 };
 
-// Tổng kết cho "Code mới", "Mở mới SPTT", "Mở mới" — cộng dồn điểm kế hoạch/
-// thực tế từng dòng, GIỚI HẠN điểm thực tế tối đa theo TRAN_DIEM (150%).
+// Tổng kết cho "Code mới" — cộng dồn điểm kế hoạch/thực tế từng dòng, GIỚI
+// HẠN điểm thực tế tối đa theo TRAN_DIEM (150%). Khác với "Mở mới"/"Mở mới
+// SPTT"/"Duy trì"/"Duy trì SPTT" (xem nguongNhomSummary bên dưới): "Code mới"
+// không có ngưỡng hoàn thành nhóm, "Điểm KPIs kế hoạch" là điểm RIÊNG từng
+// dòng (từng khách hàng mới) nên cộng dồn là đúng.
 function chiTieuSummary(kpis: KpiRow[], chiTieu: string) {
   const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
   if (rows.length === 0) return null;
@@ -186,15 +189,21 @@ function doanhSoSummary(kpis: KpiRow[], chiTieu: string) {
   return { keHoach, thucHien, diemKeHoach, diemThucTe, dat: isDat(row["Kết quả"]) };
 }
 
-// "Duy trì SPTT" / "Duy trì": Điểm KPIs kế hoạch là 1 con số TỔNG cho cả
-// nhóm (giống nhau trên mọi dòng, không cộng dồn/sum như trước). Điểm thực
-// hiện = (điểm kế hoạch nhóm / ngưỡng hoàn thành nhóm) * số chỉ tiêu đạt
-// được, giới hạn tối đa 150% điểm kế hoạch nhóm (TRAN_DIEM) - đồng bộ với
-// công thức trong workflow n8n "09b Tong Hop Diem KPI" (per_group_adj). Nếu
-// CHƯA đặt ngưỡng hoàn thành nhóm: tạm fallback về cộng dồn điểm thô từng
-// dòng, không giới hạn (UI trang xây dựng/duyệt đã cảnh báo "Chưa đặt
-// ngưỡng" để nhắc bổ sung).
-function nguongNhomSummary(kpis: KpiRow[], chiTieu: "Duy trì SPTT" | "Duy trì") {
+// "Mở mới SPTT" / "Mở mới" / "Duy trì SPTT" / "Duy trì": Điểm KPIs kế hoạch
+// là 1 con số TỔNG cho cả nhóm (giống nhau trên mọi dòng sản phẩm, không
+// cộng dồn/sum như "Code mới" - đã xác nhận qua dữ liệu thực tế ngày
+// 15/8/2026: "Mở mới"/"Mở mới SPTT" cũng lặp lại "Số lượng tối thiểu cần
+// đạt"/"Điểm KPIs kế hoạch" y hệt trên mọi dòng, cùng cấu trúc với "Duy
+// trì"/"Duy trì SPTT"). Điểm thực hiện = (điểm kế hoạch nhóm / ngưỡng hoàn
+// thành nhóm) * số chỉ tiêu đạt được, giới hạn tối đa 150% điểm kế hoạch
+// nhóm (TRAN_DIEM) - đồng bộ với công thức trong workflow n8n "09b Tong Hop
+// Diem KPI" (per_group_adj). Nếu CHƯA đặt ngưỡng hoàn thành nhóm: tạm
+// fallback về cộng dồn điểm thô từng dòng, không giới hạn (UI trang xây
+// dựng/duyệt đã cảnh báo "Chưa đặt ngưỡng" để nhắc bổ sung).
+function nguongNhomSummary(
+  kpis: KpiRow[],
+  chiTieu: "Mở mới SPTT" | "Mở mới" | "Duy trì SPTT" | "Duy trì",
+) {
   const rows = kpis.filter((k) => k["Chỉ tiêu"] === chiTieu);
   if (rows.length === 0) return null;
 
@@ -496,8 +505,8 @@ export default async function KpiPage({
       <div className="space-y-6">
         {groups.map(({ code, name, kpis, soCall, soKhach, focus }) => {
           const codeMoi = chiTieuSummary(kpis, "Code mới");
-          const moiMoiSptt = chiTieuSummary(kpis, "Mở mới SPTT");
-          const moiMoi = chiTieuSummary(kpis, "Mở mới");
+          const moiMoiSptt = nguongNhomSummary(kpis, "Mở mới SPTT");
+          const moiMoi = nguongNhomSummary(kpis, "Mở mới");
           const duyTriSptt = nguongNhomSummary(kpis, "Duy trì SPTT");
           const duyTri = nguongNhomSummary(kpis, "Duy trì");
           const doanhSoKeDonPMKpi = doanhSoSummary(kpis, "Doanh số kê đơn - phòng mạch");
@@ -601,16 +610,22 @@ export default async function KpiPage({
                         <td className="py-1.5 pr-3 text-slate-900">Mở mới SPTT</td>
                         <td className="py-1.5 pr-3 text-slate-700">
                           {moiMoiSptt.soDat}/{moiMoiSptt.tongSoChiTieu} chỉ tiêu đạt
+                          {moiMoiSptt.nguong != null && ` (ngưỡng: ${moiMoiSptt.nguong})`}
+                          {moiMoiSptt.hoanThanh && (
+                            <span className="ml-1 font-semibold text-emerald-700">
+                              Hoàn thành 100%
+                            </span>
+                          )}
                         </td>
                         <td className="py-1.5">
                           <span
                             className={`rounded-full px-2 py-0.5 font-medium ${
-                              moiMoiSptt.soDat === moiMoiSptt.tongSoChiTieu
+                              moiMoiSptt.hoanThanh
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-slate-100 text-slate-600"
                             }`}
                           >
-                            {moiMoiSptt.tongDiemThucTe}/{moiMoiSptt.tongDiemKeHoach}
+                            {moiMoiSptt.diemTong}/{moiMoiSptt.tongDiemKeHoach}
                           </span>
                         </td>
                       </tr>
@@ -620,16 +635,22 @@ export default async function KpiPage({
                         <td className="py-1.5 pr-3 text-slate-900">Mở mới</td>
                         <td className="py-1.5 pr-3 text-slate-700">
                           {moiMoi.soDat}/{moiMoi.tongSoChiTieu} chỉ tiêu đạt
+                          {moiMoi.nguong != null && ` (ngưỡng: ${moiMoi.nguong})`}
+                          {moiMoi.hoanThanh && (
+                            <span className="ml-1 font-semibold text-emerald-700">
+                              Hoàn thành 100%
+                            </span>
+                          )}
                         </td>
                         <td className="py-1.5">
                           <span
                             className={`rounded-full px-2 py-0.5 font-medium ${
-                              moiMoi.soDat === moiMoi.tongSoChiTieu
+                              moiMoi.hoanThanh
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-slate-100 text-slate-600"
                             }`}
                           >
-                            {moiMoi.tongDiemThucTe}/{moiMoi.tongDiemKeHoach}
+                            {moiMoi.diemTong}/{moiMoi.tongDiemKeHoach}
                           </span>
                         </td>
                       </tr>
