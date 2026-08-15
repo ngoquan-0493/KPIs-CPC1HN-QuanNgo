@@ -1,11 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import {
-  fetchAllRows,
-  formatVnd,
-  normalizeChannel,
-  isExcludedSaleRow,
-  preferClosedMonthRows,
-} from "@/lib/sales-channel";
+import { formatVnd, normalizeChannel } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { getCurrentEmployee } from "@/lib/current-employee";
 import SsFilter from "@/components/ss-filter";
@@ -17,7 +11,15 @@ import TheoDoiSection from "./theo-doi-section";
 import { Card, PageHeader, Badge, EmptyState, StatCard } from "@/components/ui";
 import { IconUsers, IconAlert, IconClock } from "@/components/icons";
 
-type KhachHangRow = {
+type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
+
+// Mot dong ket qua tra ve tu RPC get_customers_dashboard (Postgres function) -
+// toan bo phan tim kiem + lam giau du lieu (nhip cham soc, doanh thu thang
+// nay/truoc, so lan ghe tham, canh bao lap don...) chay het trong Postgres
+// thay vi 2 vong round-trip noi tiep (tim kiem khach hang -> roi moi 7 truy
+// van rieng cho tung loai du lieu lien quan) nhu truoc day. Xem migration
+// "add_customers_dashboard_rpc" / "fix_customers_dashboard_ss_filter".
+type CustomerDashboardRow = {
   ma_khach: string;
   ten_khach: string | null;
   tinh: string | null;
@@ -30,33 +32,23 @@ type KhachHangRow = {
   ngay_tuong_tac_gan_nhat: string | null;
   next_action: string | null;
   ngay_follow_up_tiep_theo: string | null;
-};
-
-type NhipRow = {
-  ma_khach: string;
   trang_thai_nhip: string | null;
   muc_do_rui_ro: string | null;
   so_cong_viec_qua_han: number | null;
+  tong_doanh_thu_luy_ke: number | null;
+  so_san_pham_da_mua: number | null;
+  doanh_thu_thang_nay: number | null;
+  doanh_thu_thang_truoc: number | null;
+  so_lan_ghe_tham: number | null;
+  lap_don_muc_do: string | null;
+  lap_don_so_luong: number | null;
 };
 
-type SummaryRow = { ma_khach: string; tong_doanh_thu: number | null; so_san_pham_da_mua: number | null };
-
-type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
-
-type SaleAggRow = {
-  ma_khach: string | null;
-  doanh_thu: number | null;
-  nhom_khach_hang: string | null;
-  trang_thai?: string | null;
-};
-
-type CheckinRow = { ma_khach: string | null };
-
-type LapDonRow = {
-  ma_khach: string;
-  muc_do_canh_bao: string | null;
-  thang_danh_gia: string | null;
-  ten_san_pham: string | null;
+type CustomersDashboard = {
+  source: "tong" | "hien_tai";
+  stats: { tong_khach: number; qua_han: number; chua_phu_trach: number };
+  total_matched: number;
+  rows: CustomerDashboardRow[];
 };
 
 // Ma nhan vien nhap khong dong nhat giua cac bang (co/khong so 0 dau) - cung
@@ -84,31 +76,11 @@ const NHIP_TONE: Record<string, "success" | "warning" | "danger" | "neutral"> = 
 const RUI_RO_LABEL: Record<string, string> = { P1: "Cao", P2: "Trung bình", P3: "Thấp" };
 const RUI_RO_TONE: Record<string, "danger" | "warning" | "info"> = { P1: "danger", P2: "warning", P3: "info" };
 
-// "Khẩn" > "Ưu tiên" > "Mồ côi" - dung de chon muc canh bao nang nhat khi
-// 1 khach co nhieu dong (nhieu san pham) can lap don trong cung thang danh gia.
-const LAP_DON_ORDER: Record<string, number> = { "Khẩn": 3, "Ưu tiên": 2, "Mồ côi": 1 };
 const LAP_DON_TONE: Record<string, "danger" | "warning" | "neutral"> = {
   "Khẩn": "danger",
   "Ưu tiên": "warning",
   "Mồ côi": "neutral",
 };
-
-// thang_danh_gia luu dang "T7/2026" - parse ra so de so sanh, lay thang moi
-// nhat dang co trong ket qua truy van thay vi gia dinh cung thang server.
-function parseThangDanhGia(s: string | null) {
-  const m = (s ?? "").match(/T(\d+)\/(\d+)/);
-  if (!m) return 0;
-  return Number(m[2]) * 100 + Number(m[1]);
-}
-
-function tinhTongDoanhThu(rows: SaleAggRow[]) {
-  const map = new Map<string, number>();
-  for (const r of rows) {
-    if (!r.ma_khach || isExcludedSaleRow(r)) continue;
-    map.set(r.ma_khach, (map.get(r.ma_khach) ?? 0) + (r.doanh_thu ?? 0));
-  }
-  return map;
-}
 
 // Mui ten so sanh doanh thu thang nay voi thang truoc cho 1 khach hang.
 function renderDelta(thangNay: number, thangTruoc: number) {
@@ -145,23 +117,13 @@ export default async function CustomersPage({
   const supabase = await createClient();
   const currentEmployee = await getCurrentEmployee();
 
-  const [empRes, ssEmpRes, tongKhachRes, quaHanRes, chuaPhuTrachRes] = await Promise.all([
+  const [empRes, ssEmpRes] = await Promise.all([
     supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien,ss").in("vi_tri", ["NVKD", "TTS"]),
-    // Rieng danh sach SS (ma + ten) - dung de quy doi ma_ss_phu_trach (luu o
-    // khach_hang_master) sang TEN SS, roi tra ra nhom NV cua SS do khi NV goc
-    // phu trach 1 khach-san pham DA BI XOA HAN khoi "Danh sach nhan vien" (nghi
-    // viec), nen khong the tra cuu SS qua bang NV nhu binh thuong duoc nua.
-    // Xem TheoDoiSection.
+    // Rieng danh sach SS (ma + ten) - dung de quy doi ten SS sang MA SS truoc
+    // khi loc (khach_hang_master.ma_ss_phu_trach luu MA, khong phai TEN), va
+    // tra ra nhom NV cua SS do khi NV goc phu trach 1 khach-san pham DA BI
+    // XOA HAN khoi "Danh sach nhan vien" (nghi viec). Xem TheoDoiSection.
     supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien").eq("vi_tri", "SS"),
-    supabase.from("khach_hang_master").select("ma_khach", { count: "exact", head: true }),
-    supabase
-      .from("nhip_khach_hang")
-      .select("ma_khach", { count: "exact", head: true })
-      .eq("trang_thai_nhip", "overdue"),
-    supabase
-      .from("nhip_khach_hang")
-      .select("ma_khach", { count: "exact", head: true })
-      .eq("trang_thai_nhip", "unassigned_critical"),
   ]);
 
   const ssEmployees = ((ssEmpRes.data ?? []) as { ma_nhan_vien: string; ten_nhan_vien: string | null }[]).map(
@@ -189,126 +151,30 @@ export default async function CustomersPage({
     .map(([code, name]) => ({ code, name: name ?? code }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  let khachRows: KhachHangRow[] = [];
-  let tongSoKhopBoLoc = 0;
-  let error: { message: string } | null = null;
+  // Bo loc SS tren URL luu TEN SS (giong sales/page.tsx) nhung
+  // khach_hang_master.ma_ss_phu_trach luu MA - quy doi qua danh sach SS
+  // truoc khi goi RPC (sua loi cu: loc SS o tab Danh sach truoc day luon ra
+  // 0 ket qua vi so sanh nham ten voi ma).
+  const selectedSsCode = selectedSs
+    ? (ssEmployees.find((e) => e.name === selectedSs)?.code ?? selectedSs)
+    : null;
 
-  if (daLoc) {
-    const cols =
-      "ma_khach,ten_khach,tinh,nhom_khach_hang,kenh,trang_thai,ma_nhan_vien_phu_trach,ma_ss_phu_trach,ngay_mua_gan_nhat,ngay_tuong_tac_gan_nhat,next_action,ngay_follow_up_tiep_theo";
-    const { data, error: fetchError } = await fetchAllRows<KhachHangRow>((from, to) => {
-      let query = supabase.from("khach_hang_master").select(cols).range(from, to);
-      if (q) query = query.or(`ten_khach.ilike.%${q}%,ma_khach.ilike.%${q}%`);
-      if (selectedSs) query = query.eq("ma_ss_phu_trach", selectedSs);
-      return query;
-    });
-    error = fetchError;
-    let rows = data;
-    if (selectedNv) {
-      rows = rows.filter((r) => normCode(r.ma_nhan_vien_phu_trach) === selectedNv);
-    }
-    rows.sort((a, b) => (a.ten_khach ?? a.ma_khach).localeCompare(b.ten_khach ?? b.ma_khach));
-    tongSoKhopBoLoc = rows.length;
-    khachRows = rows.slice(0, MAX_HIEN_THI);
-  }
+  const dashRes = await supabase.rpc("get_customers_dashboard", {
+    p_da_loc: daLoc,
+    p_q: q || null,
+    p_ss: selectedSsCode,
+    p_nv: selectedNv ?? null,
+    p_nam: nam,
+    p_thang: thang,
+    p_prev_nam: prevNam,
+    p_prev_thang: prevThang,
+    p_limit: MAX_HIEN_THI,
+  });
 
-  const maKhachList = khachRows.map((r) => r.ma_khach);
-  const saleCols = "ma_khach,doanh_thu,nhom_khach_hang,trang_thai";
-  const [nhipRes, summaryRes, tongThangNayRes, hienTaiThangNayRes, tongThangTruocRes, checkinRes, lapDonRes] =
-    await Promise.all([
-      maKhachList.length > 0
-        ? supabase
-            .from("nhip_khach_hang")
-            .select("ma_khach,trang_thai_nhip,muc_do_rui_ro,so_cong_viec_qua_han")
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as NhipRow[] }),
-      maKhachList.length > 0
-        ? supabase
-            .from("v_customer_summary")
-            .select("ma_khach,tong_doanh_thu,so_san_pham_da_mua")
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as SummaryRow[] }),
-      // Doanh thu thang nay: du lieu thang dang chay nam trong "Du lieu sale
-      // thang hien tai", cac thang da khoa so nam trong "Du lieu sale tong" -
-      // truy van ca 2 bang cho ca thang nay va thang truoc de khong bo sot du
-      // lieu du thang hien tai la thang nao (giong cach lam cua trang Doanh so).
-      maKhachList.length > 0
-        ? supabase
-            .from("Du lieu sale tong")
-            .select(saleCols)
-            .eq("nam", nam)
-            .eq("thang", thang)
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as SaleAggRow[] }),
-      maKhachList.length > 0
-        ? supabase
-            .from("Du lieu sale thang hien tai")
-            .select(saleCols)
-            .eq("nam", nam)
-            .eq("thang", thang)
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as SaleAggRow[] }),
-      maKhachList.length > 0
-        ? supabase
-            .from("Du lieu sale tong")
-            .select(saleCols)
-            .eq("nam", prevNam)
-            .eq("thang", prevThang)
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as SaleAggRow[] }),
-      // So lan ghe tham trong thang hien tai - dem so dong cham cong (moi dong
-      // la 1 lan checkin) theo tung khach, khong gioi han theo ngay vi bang
-      // nay chi luu du lieu thang dang chay.
-      maKhachList.length > 0
-        ? fetchAllRows<CheckinRow>((from, to) =>
-            supabase
-              .from("Du lieu cham cong thang hien tai")
-              .select("ma_khach")
-              .in("ma_khach", maKhachList)
-              .range(from, to),
-          )
-        : Promise.resolve({ data: [] as CheckinRow[], error: null }),
-      // Can lap don: lay thang danh gia moi nhat dang co trong bang cho danh
-      // sach khach dang hien thi, khong gia dinh truoc thang cu the.
-      maKhachList.length > 0
-        ? supabase
-            .from("phan_loai_khach_hang_can_lap_don")
-            .select("ma_khach,muc_do_canh_bao,thang_danh_gia,ten_san_pham")
-            .in("ma_khach", maKhachList)
-        : Promise.resolve({ data: [] as LapDonRow[] }),
-    ]);
-
-  const nhipByMa = new Map<string, NhipRow>();
-  for (const n of (nhipRes.data ?? []) as NhipRow[]) nhipByMa.set(n.ma_khach, n);
-  const summaryByMa = new Map<string, SummaryRow>();
-  for (const s of (summaryRes.data ?? []) as SummaryRow[]) summaryByMa.set(s.ma_khach, s);
-
-  const doanhThuThangNayByMa = tinhTongDoanhThu(
-    preferClosedMonthRows(
-      (tongThangNayRes.data ?? []) as SaleAggRow[],
-      (hienTaiThangNayRes.data ?? []) as SaleAggRow[],
-    ),
-  );
-  const doanhThuThangTruocByMa = tinhTongDoanhThu((tongThangTruocRes.data ?? []) as SaleAggRow[]);
-
-  const gheThamByMa = new Map<string, number>();
-  for (const c of ((checkinRes as { data: CheckinRow[] | null }).data ?? []) as CheckinRow[]) {
-    if (!c.ma_khach) continue;
-    gheThamByMa.set(c.ma_khach, (gheThamByMa.get(c.ma_khach) ?? 0) + 1);
-  }
-
-  const lapDonRowsAll = (lapDonRes.data ?? []) as LapDonRow[];
-  const thangDanhGiaMoiNhat = Math.max(0, ...lapDonRowsAll.map((r) => parseThangDanhGia(r.thang_danh_gia)));
-  const lapDonByMa = new Map<string, { muc_do: string; soLuong: number }>();
-  for (const r of lapDonRowsAll) {
-    if (parseThangDanhGia(r.thang_danh_gia) !== thangDanhGiaMoiNhat) continue;
-    const cur = lapDonByMa.get(r.ma_khach);
-    if (!cur || (LAP_DON_ORDER[r.muc_do_canh_bao ?? ""] ?? 0) > (LAP_DON_ORDER[cur.muc_do] ?? 0)) {
-      lapDonByMa.set(r.ma_khach, { muc_do: r.muc_do_canh_bao ?? "", soLuong: (cur?.soLuong ?? 0) + 1 });
-    } else {
-      lapDonByMa.set(r.ma_khach, { muc_do: cur.muc_do, soLuong: cur.soLuong + 1 });
-    }
-  }
+  const error = dashRes.error;
+  const dash = (dashRes.data ?? null) as CustomersDashboard | null;
+  const khachRows = dash?.rows ?? [];
+  const tongSoKhopBoLoc = dash?.total_matched ?? 0;
 
   return (
     <div className="mx-auto max-w-[1600px] p-6 lg:p-8">
@@ -355,19 +221,19 @@ export default async function CustomersPage({
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard
           label="Tổng số khách hàng"
-          value={(tongKhachRes.count ?? 0).toLocaleString("vi-VN")}
+          value={(dash?.stats.tong_khach ?? 0).toLocaleString("vi-VN")}
           icon={<IconUsers className="h-5 w-5" />}
           tone="brand"
         />
         <StatCard
           label="Khách quá hạn chăm sóc"
-          value={(quaHanRes.count ?? 0).toLocaleString("vi-VN")}
+          value={(dash?.stats.qua_han ?? 0).toLocaleString("vi-VN")}
           icon={<IconClock className="h-5 w-5" />}
           tone="warning"
         />
         <StatCard
           label="Khách chưa có người phụ trách"
-          value={(chuaPhuTrachRes.count ?? 0).toLocaleString("vi-VN")}
+          value={(dash?.stats.chua_phu_trach ?? 0).toLocaleString("vi-VN")}
           icon={<IconAlert className="h-5 w-5" />}
           tone="info"
         />
@@ -405,19 +271,15 @@ export default async function CustomersPage({
               </thead>
               <tbody>
                 {khachRows.map((k) => {
-                  const nhip = nhipByMa.get(k.ma_khach);
-                  const summary = summaryByMa.get(k.ma_khach);
                   const nvCode = normCode(k.ma_nhan_vien_phu_trach);
-                  const lapDon = lapDonByMa.get(k.ma_khach);
-                  const soLanGheTham = gheThamByMa.get(k.ma_khach) ?? 0;
-                  const dtThangNay = doanhThuThangNayByMa.get(k.ma_khach) ?? 0;
-                  const dtThangTruoc = doanhThuThangTruocByMa.get(k.ma_khach) ?? 0;
+                  const dtThangNay = k.doanh_thu_thang_nay ?? 0;
+                  const dtThangTruoc = k.doanh_thu_thang_truoc ?? 0;
                   return (
                     <tr key={k.ma_khach} className="border-b border-slate-100 align-top last:border-0">
                       <td className="px-4 py-2.5">
                         <p className="font-medium text-slate-900">{ghepTenMa(k.ten_khach, k.ma_khach)}</p>
                         <p className="mt-0.5 text-xs text-slate-400">
-                          Tổng lũy kế: {formatVnd(summary?.tong_doanh_thu ?? 0)}
+                          Tổng lũy kế: {formatVnd(k.tong_doanh_thu_luy_ke ?? 0)}
                         </p>
                         {k.trang_thai === "inactive" && (
                           <Badge tone="neutral" className="mt-1">
@@ -433,34 +295,34 @@ export default async function CustomersPage({
                           : "—"}
                       </td>
                       <td className="px-3 py-2.5">
-                        {nhip?.trang_thai_nhip ? (
-                          <Badge tone={NHIP_TONE[nhip.trang_thai_nhip] ?? "neutral"}>
-                            {NHIP_LABEL[nhip.trang_thai_nhip] ?? nhip.trang_thai_nhip}
+                        {k.trang_thai_nhip ? (
+                          <Badge tone={NHIP_TONE[k.trang_thai_nhip] ?? "neutral"}>
+                            {NHIP_LABEL[k.trang_thai_nhip] ?? k.trang_thai_nhip}
                           </Badge>
                         ) : (
                           "—"
                         )}
-                        {nhip?.so_cong_viec_qua_han ? (
+                        {k.so_cong_viec_qua_han ? (
                           <span className="ml-1 text-xs text-slate-400">
-                            ({nhip.so_cong_viec_qua_han} việc quá hạn)
+                            ({k.so_cong_viec_qua_han} việc quá hạn)
                           </span>
                         ) : null}
                       </td>
                       <td className="px-3 py-2.5">
-                        {nhip?.muc_do_rui_ro ? (
-                          <Badge tone={RUI_RO_TONE[nhip.muc_do_rui_ro] ?? "neutral"}>
-                            {RUI_RO_LABEL[nhip.muc_do_rui_ro] ?? nhip.muc_do_rui_ro}
+                        {k.muc_do_rui_ro ? (
+                          <Badge tone={RUI_RO_TONE[k.muc_do_rui_ro] ?? "neutral"}>
+                            {RUI_RO_LABEL[k.muc_do_rui_ro] ?? k.muc_do_rui_ro}
                           </Badge>
                         ) : (
                           "—"
                         )}
                       </td>
                       <td className="px-3 py-2.5">
-                        {lapDon ? (
+                        {k.lap_don_muc_do ? (
                           <>
-                            <Badge tone={LAP_DON_TONE[lapDon.muc_do] ?? "neutral"}>{lapDon.muc_do || "—"}</Badge>
-                            {lapDon.soLuong > 1 && (
-                              <span className="ml-1 text-xs text-slate-400">({lapDon.soLuong} SP)</span>
+                            <Badge tone={LAP_DON_TONE[k.lap_don_muc_do] ?? "neutral"}>{k.lap_don_muc_do || "—"}</Badge>
+                            {(k.lap_don_so_luong ?? 0) > 1 && (
+                              <span className="ml-1 text-xs text-slate-400">({k.lap_don_so_luong} SP)</span>
                             )}
                           </>
                         ) : (
@@ -468,7 +330,7 @@ export default async function CustomersPage({
                         )}
                       </td>
                       <td className="px-3 py-2.5 text-slate-700">
-                        <p>{soLanGheTham} lần trong tháng</p>
+                        <p>{k.so_lan_ghe_tham ?? 0} lần trong tháng</p>
                         <p className="mt-0.5 text-xs text-slate-400">
                           Gần nhất: {k.ngay_tuong_tac_gan_nhat || "—"}
                         </p>
