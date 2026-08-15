@@ -1,6 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
 import { getCurrentEmployee } from "@/lib/current-employee";
-import { fetchAllRows } from "@/lib/sales-channel";
 import { Card, PageHeader, SectionHeading, EmptyState, StatCard, Badge } from "@/components/ui";
 import { IconWallet, IconClock, IconAlert, IconCheck } from "@/components/icons";
 import { ThauSelect, ThauSearch } from "@/components/thau-filters";
@@ -25,44 +24,65 @@ import ThauGanNv from "@/components/thau-gan-nv";
 // - Cot "Dieu kien" trong file la so chenh lech/dieu chinh, dung dung nghia
 //   "dieu kien hop dong": da kiem chung KH = TH + Con lai + Dieu kien tren
 //   100% so dong.
+//
+// Toan bo cong don hop dong/san pham chay trong Postgres (RPC
+// get_thau_dashboard) thay vi tai het ~vai nghin dong tho ve JS de gop -
+// xem migration "add_thau_dashboard_rpc". Da doi chieu ket qua RPC voi truy
+// van thu cong tren du lieu that (tong gt_ke_hoach/gt_thuc_hien/gt_con_lai,
+// loc theo tinh, 1 dong hop dong, 1 dong san pham) - khop tuyet doi.
 // ===========================================================================
 
-type ThauRow = {
-  hop_dong_id: number;
+type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
+
+type ThauStats = {
+  gt_ke_hoach: number;
+  gt_thuc_hien: number;
+  gt_con_lai: number;
+  dong_chua_giao: number;
+  so_khach_hang: number;
+  so_hop_dong: number;
+  so_chua_gan: number;
+  gt_sap_het_han: number;
+  so_sap_het_han: number;
+  so_san_pham: number;
+  ngay_bao_cao: string | null;
+};
+
+type ThauHopDongRow = {
+  id: number;
   so_hd: string;
   ma_khach: string;
-  ten_khach: string | null;
-  tinh: string | null;
-  mien: string | null;
-  loai_hd: string | null;
+  ten_khach: string;
+  tinh: string;
   ngay_het_hieu_luc: string | null;
   so_ngay_con_lai: number | null;
   trang_thai_hd: string;
   ma_nhan_vien_phu_trach: string | null;
   ten_nhan_vien: string | null;
-  ten_ss: string | null;
-  thuoc_nhom_asm: boolean | null;
-  co_trong_khach_hang_master: boolean | null;
-  ma_hang: string;
-  ten_mat_hang: string | null;
-  ten_chuan: string | null;
-  nhom_sp: string | null;
-  la_sptt: boolean | null;
-  so_luong_ke_hoach: number | null;
-  so_luong_thuc_hien: number | null;
-  so_luong_con_lai: number | null;
-  gia_tri_ke_hoach: number | null;
-  gia_tri_thuc_hien: number | null;
-  gia_tri_con_lai: number | null;
-  ngay_bao_cao: string | null;
+  co_trong_master: boolean;
+  so_mat_hang: number;
+  so_chua_giao: number;
+  gt_ke_hoach: number;
+  gt_thuc_hien: number;
+  gt_con_lai: number;
 };
 
-type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
+type ThauSanPhamRow = {
+  ten: string;
+  nhom_sp: string;
+  la_sptt: boolean;
+  sl_con_lai: number;
+  gt_con_lai: number;
+  gt_thuc_hien: number;
+  so_hd: number;
+};
 
-const COLS =
-  "hop_dong_id,so_hd,ma_khach,ten_khach,tinh,mien,loai_hd,ngay_het_hieu_luc,so_ngay_con_lai,trang_thai_hd,ma_nhan_vien_phu_trach,ten_nhan_vien,ten_ss,thuoc_nhom_asm,co_trong_khach_hang_master,ma_hang,ten_mat_hang,ten_chuan,nhom_sp,la_sptt,so_luong_ke_hoach,so_luong_thuc_hien,so_luong_con_lai,gia_tri_ke_hoach,gia_tri_thuc_hien,gia_tri_con_lai,ngay_bao_cao";
-
-const TOP_N = 15;
+type ThauDashboard = {
+  stats: ThauStats;
+  sap_het_han: ThauHopDongRow[];
+  top_hop_dong: ThauHopDongRow[];
+  top_san_pham: ThauSanPhamRow[];
+};
 
 // Gia tri thau rat lon (hang tram ty) - hien theo ty/trieu cho de doc thay vi
 // so day du nhu cac trang doanh so.
@@ -110,154 +130,58 @@ export default async function ThauPage({
   const viTri = employee?.["Vị trí"] ?? null;
   const coQuyenGan = viTri === "SS" || viTri === "ASM";
 
-  const { data: rows, error } = await fetchAllRows<ThauRow>((from, to) => {
-    let q = supabase.from("v_thau_chi_tiet").select(COLS);
-    if (sp.mien) q = q.eq("mien", sp.mien);
-    if (sp.tinh) q = q.eq("tinh", sp.tinh);
-    if (sp.tt) q = q.eq("trang_thai_hd", sp.tt);
-    if (sp.ss) q = q.eq("ten_ss", sp.ss);
-    if (sp.nv) q = q.eq("ma_nhan_vien_phu_trach", sp.nv);
-    if (sp.asm === "1") q = q.eq("thuoc_nhom_asm", true);
-    if (sp.q) q = q.or(`ten_khach.ilike.%${sp.q}%,ma_khach.ilike.%${sp.q}%,so_hd.ilike.%${sp.q}%`);
-    return q.range(from, to) as unknown as PromiseLike<{
-      data: ThauRow[] | null;
-      error: { message: string } | null;
-    }>;
-  });
+  const [dashRes, nhanVienRes, hdRes] = await Promise.all([
+    supabase.rpc("get_thau_dashboard", {
+      p_mien: sp.mien ?? null,
+      p_tinh: sp.tinh ?? null,
+      p_tt: sp.tt ?? null,
+      p_ss: sp.ss ?? null,
+      p_nv: sp.nv ?? null,
+      p_asm: sp.asm === "1",
+      p_q: sp.q || null,
+    }),
+    supabase
+      .from("Danh sach nhan vien")
+      .select("ma_nhan_vien,ten_nhan_vien,ss")
+      .eq("trang_thai", "Đang làm việc")
+      .order("ten_nhan_vien"),
+    // Danh sach gia tri cho bo loc tinh - lay 1 lan tu bang hop dong (nho,
+    // 1.209 dong) thay vi suy ra tu ket qua da loc (neu khong bo loc se tu
+    // thu hep dan va khong quay lai duoc).
+    supabase.from("thau_hop_dong").select("tinh,mien").range(0, 1999),
+  ]);
 
-  const { data: nhanVienRaw } = await supabase
-    .from("Danh sach nhan vien")
-    .select("ma_nhan_vien,ten_nhan_vien,ss")
-    .eq("trang_thai", "Đang làm việc")
-    .order("ten_nhan_vien");
+  const error = dashRes.error;
+  const dash = (dashRes.data ?? null) as ThauDashboard | null;
 
-  const nhanVienList = ((nhanVienRaw as EmployeeRow[] | null) ?? []).map((nv) => ({
+  const nhanVienList = ((nhanVienRes.data as EmployeeRow[] | null) ?? []).map((nv) => ({
     ma: nv.ma_nhan_vien,
     ten: nv.ten_nhan_vien ?? nv.ma_nhan_vien,
     ss: nv.ss,
   }));
 
-  // Danh sach gia tri cho cac bo loc - lay 1 lan tu bang hop dong (nho, 1.209
-  // dong) thay vi suy ra tu ket qua da loc (neu khong bo loc se tu thu hep dan
-  // va khong quay lai duoc).
-  const { data: hdRaw } = await supabase
-    .from("thau_hop_dong")
-    .select("tinh,mien")
-    .range(0, 1999);
   const tinhList = Array.from(
-    new Set(((hdRaw as { tinh: string | null }[] | null) ?? []).map((r) => r.tinh).filter(Boolean)),
+    new Set(((hdRes.data as { tinh: string | null }[] | null) ?? []).map((r) => r.tinh).filter(Boolean)),
   ).sort() as string[];
   const ssList = Array.from(new Set(nhanVienList.map((nv) => nv.ss).filter(Boolean))).sort() as string[];
 
-  const data = rows ?? [];
-
-  // ---- Tong hop cap hop dong ----
-  type HopDong = {
-    id: number;
-    so_hd: string;
-    ma_khach: string;
-    ten_khach: string;
-    tinh: string;
-    ngay_het_hieu_luc: string | null;
-    so_ngay_con_lai: number | null;
-    trang_thai_hd: string;
-    ma_nhan_vien_phu_trach: string | null;
-    ten_nhan_vien: string | null;
-    coTrongMaster: boolean;
-    soMatHang: number;
-    soChuaGiao: number;
-    gtKeHoach: number;
-    gtThucHien: number;
-    gtConLai: number;
-  };
-
-  const hopDongMap = new Map<number, HopDong>();
-  let gtKeHoach = 0;
-  let gtThucHien = 0;
-  let gtConLai = 0;
-  let dongChuaGiao = 0;
-
-  for (const r of data) {
-    const kh = r.gia_tri_ke_hoach ?? 0;
-    const th = r.gia_tri_thuc_hien ?? 0;
-    const cl = r.gia_tri_con_lai ?? 0;
-    gtKeHoach += kh;
-    gtThucHien += th;
-    gtConLai += cl;
-    if ((r.so_luong_thuc_hien ?? 0) === 0) dongChuaGiao += 1;
-
-    let hd = hopDongMap.get(r.hop_dong_id);
-    if (!hd) {
-      hd = {
-        id: r.hop_dong_id,
-        so_hd: r.so_hd,
-        ma_khach: r.ma_khach,
-        ten_khach: r.ten_khach ?? r.ma_khach,
-        tinh: r.tinh ?? "—",
-        ngay_het_hieu_luc: r.ngay_het_hieu_luc,
-        so_ngay_con_lai: r.so_ngay_con_lai,
-        trang_thai_hd: r.trang_thai_hd,
-        ma_nhan_vien_phu_trach: r.ma_nhan_vien_phu_trach,
-        ten_nhan_vien: r.ten_nhan_vien,
-        coTrongMaster: !!r.co_trong_khach_hang_master,
-        soMatHang: 0,
-        soChuaGiao: 0,
-        gtKeHoach: 0,
-        gtThucHien: 0,
-        gtConLai: 0,
-      };
-      hopDongMap.set(r.hop_dong_id, hd);
-    }
-    hd.soMatHang += 1;
-    if ((r.so_luong_thuc_hien ?? 0) === 0) hd.soChuaGiao += 1;
-    hd.gtKeHoach += kh;
-    hd.gtThucHien += th;
-    hd.gtConLai += cl;
-  }
-
-  const hopDongs = Array.from(hopDongMap.values());
-  const soKhachHang = new Set(data.map((r) => r.ma_khach)).size;
-  const soChuaGan = hopDongs.filter((h) => !h.ma_nhan_vien_phu_trach).length;
+  const stats = dash?.stats ?? null;
+  const gtKeHoach = stats?.gt_ke_hoach ?? 0;
+  const gtThucHien = stats?.gt_thuc_hien ?? 0;
+  const gtConLai = stats?.gt_con_lai ?? 0;
+  const dongChuaGiao = stats?.dong_chua_giao ?? 0;
+  const soKhachHang = stats?.so_khach_hang ?? 0;
+  const soHopDong = stats?.so_hop_dong ?? 0;
+  const soChuaGan = stats?.so_chua_gan ?? 0;
+  const gtSapHetHan = stats?.gt_sap_het_han ?? 0;
+  const soSapHetHan = stats?.so_sap_het_han ?? 0;
+  const soSanPham = stats?.so_san_pham ?? 0;
+  const ngayBaoCao = stats?.ngay_bao_cao ?? null;
   const tyLeThucHien = gtKeHoach > 0 ? (gtThucHien / gtKeHoach) * 100 : 0;
 
-  const sapHetHan = hopDongs
-    .filter((h) => h.trang_thai_hd === "Sắp hết hạn" && h.gtConLai > 0)
-    .sort((a, b) => (a.so_ngay_con_lai ?? 0) - (b.so_ngay_con_lai ?? 0));
-  const gtSapHetHan = sapHetHan.reduce((s, h) => s + h.gtConLai, 0);
-
-  const topHopDong = [...hopDongs].sort((a, b) => b.gtConLai - a.gtConLai).slice(0, 50);
-
-  // ---- Top mat hang con lai nhieu nhat (gop theo ten chuan) ----
-  const sanPhamMap = new Map<
-    string,
-    { ten: string; nhomSp: string; laSptt: boolean; slConLai: number; gtConLai: number; gtThucHien: number; soHd: Set<number> }
-  >();
-  for (const r of data) {
-    const key = r.ten_chuan || r.ten_mat_hang || r.ma_hang;
-    let p = sanPhamMap.get(key);
-    if (!p) {
-      p = {
-        ten: key,
-        nhomSp: r.nhom_sp ?? "—",
-        laSptt: !!r.la_sptt,
-        slConLai: 0,
-        gtConLai: 0,
-        gtThucHien: 0,
-        soHd: new Set(),
-      };
-      sanPhamMap.set(key, p);
-    }
-    p.slConLai += r.so_luong_con_lai ?? 0;
-    p.gtConLai += r.gia_tri_con_lai ?? 0;
-    p.gtThucHien += r.gia_tri_thuc_hien ?? 0;
-    p.soHd.add(r.hop_dong_id);
-    if (r.la_sptt) p.laSptt = true;
-  }
-  const topSanPham = Array.from(sanPhamMap.values())
-    .sort((a, b) => b.gtConLai - a.gtConLai)
-    .slice(0, TOP_N);
-
-  const ngayBaoCao = data[0]?.ngay_bao_cao ?? null;
+  const sapHetHan = dash?.sap_het_han ?? [];
+  const topHopDong = dash?.top_hop_dong ?? [];
+  const topSanPham = dash?.top_san_pham ?? [];
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
@@ -318,7 +242,7 @@ export default async function ThauPage({
           value={formatTien(gtKeHoach)}
           icon={<IconWallet className="h-5 w-5" />}
           tone="brand"
-          hint={`${hopDongs.length.toLocaleString("vi-VN")} hợp đồng · ${soKhachHang.toLocaleString("vi-VN")} khách`}
+          hint={`${soHopDong.toLocaleString("vi-VN")} hợp đồng · ${soKhachHang.toLocaleString("vi-VN")} khách`}
         />
         <StatCard
           label="Đã thực hiện"
@@ -339,7 +263,7 @@ export default async function ThauPage({
           value={formatTien(gtSapHetHan)}
           icon={<IconAlert className="h-5 w-5" />}
           tone="warning"
-          hint={`${sapHetHan.length} hợp đồng còn dư hàng`}
+          hint={`${soSapHetHan} hợp đồng còn dư hàng`}
         />
       </div>
 
@@ -358,7 +282,7 @@ export default async function ThauPage({
         <SectionHeading
           title="Hợp đồng sắp hết hạn còn dư hàng"
           description="Ưu tiên đẩy hàng trước khi hết hiệu lực"
-          count={sapHetHan.length}
+          count={soSapHetHan}
         />
         {sapHetHan.length === 0 ? (
           <EmptyState>Không có hợp đồng nào sắp hết hạn trong 90 ngày tới.</EmptyState>
@@ -376,8 +300,8 @@ export default async function ThauPage({
                 </tr>
               </thead>
               <tbody>
-                {sapHetHan.slice(0, 20).map((h) => {
-                  const pct = h.gtKeHoach > 0 ? (h.gtThucHien / h.gtKeHoach) * 100 : 0;
+                {sapHetHan.map((h) => {
+                  const pct = h.gt_ke_hoach > 0 ? (h.gt_thuc_hien / h.gt_ke_hoach) * 100 : 0;
                   return (
                     <tr key={h.id} className="border-b border-slate-100 last:border-0">
                       <td className="px-2 py-2">
@@ -396,7 +320,7 @@ export default async function ThauPage({
                         </Badge>
                       </td>
                       <td className="px-2 py-2 text-right font-semibold tabular-nums text-slate-900">
-                        {formatTien(h.gtConLai)}
+                        {formatTien(h.gt_con_lai)}
                       </td>
                       <td className="px-2 py-2 text-right">
                         <Badge tone={tonePhanTram(pct)}>{pct.toFixed(0)}%</Badge>
@@ -414,7 +338,7 @@ export default async function ThauPage({
         <SectionHeading
           title="Hợp đồng theo giá trị còn lại"
           description="50 hợp đồng còn dư hàng nhiều nhất"
-          count={hopDongs.length}
+          count={soHopDong}
         />
         {topHopDong.length === 0 ? (
           <EmptyState>Không có hợp đồng nào khớp bộ lọc.</EmptyState>
@@ -435,14 +359,14 @@ export default async function ThauPage({
               </thead>
               <tbody>
                 {topHopDong.map((h) => {
-                  const pct = h.gtKeHoach > 0 ? (h.gtThucHien / h.gtKeHoach) * 100 : 0;
+                  const pct = h.gt_ke_hoach > 0 ? (h.gt_thuc_hien / h.gt_ke_hoach) * 100 : 0;
                   return (
                     <tr key={h.id} className="border-b border-slate-100 last:border-0 align-top">
                       <td className="px-2 py-2">
                         <p className="font-medium text-slate-800">{h.ten_khach}</p>
                         <p className="text-xs text-slate-400">
                           {h.ma_khach} · {h.tinh}
-                          {!h.coTrongMaster && (
+                          {!h.co_trong_master && (
                             <span className="ml-1 text-amber-600">· chưa có trong hệ thống KH</span>
                           )}
                         </p>
@@ -467,21 +391,21 @@ export default async function ThauPage({
                         </Badge>
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums text-slate-700">
-                        {formatTien(h.gtKeHoach)}
+                        {formatTien(h.gt_ke_hoach)}
                       </td>
                       <td className="px-2 py-2 text-right tabular-nums">
-                        <span className="text-slate-700">{formatTien(h.gtThucHien)}</span>
+                        <span className="text-slate-700">{formatTien(h.gt_thuc_hien)}</span>
                         <p className="text-[11px]">
                           <Badge tone={tonePhanTram(pct)}>{pct.toFixed(0)}%</Badge>
                         </p>
                       </td>
                       <td className="px-2 py-2 text-right font-semibold tabular-nums text-slate-900">
-                        {formatTien(h.gtConLai)}
+                        {formatTien(h.gt_con_lai)}
                       </td>
                       <td className="px-2 py-2 text-right text-xs text-slate-600">
-                        {h.soMatHang}
-                        {h.soChuaGiao > 0 && (
-                          <span className="text-amber-600"> · {h.soChuaGiao} chưa giao</span>
+                        {h.so_mat_hang}
+                        {h.so_chua_giao > 0 && (
+                          <span className="text-amber-600"> · {h.so_chua_giao} chưa giao</span>
                         )}
                       </td>
                       <td className="px-2 py-2">
@@ -506,7 +430,7 @@ export default async function ThauPage({
         <SectionHeading
           title="Mặt hàng còn dư nhiều nhất"
           description="Gộp theo tên sản phẩm chuẩn hoá"
-          count={sanPhamMap.size}
+          count={soSanPham}
         />
         {topSanPham.length === 0 ? (
           <EmptyState>Không có dữ liệu mặt hàng.</EmptyState>
@@ -527,21 +451,19 @@ export default async function ThauPage({
                   <tr key={p.ten} className="border-b border-slate-100 last:border-0">
                     <td className="px-2 py-2">
                       <span className="font-medium text-slate-800">{p.ten}</span>
-                      {p.laSptt && (
+                      {p.la_sptt && (
                         <Badge tone="brand" className="ml-2">
                           SPTT
                         </Badge>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-xs text-slate-500">{p.nhomSp}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-600">
-                      {p.soHd.size}
-                    </td>
+                    <td className="px-2 py-2 text-xs text-slate-500">{p.nhom_sp}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-600">{p.so_hd}</td>
                     <td className="px-2 py-2 text-right tabular-nums text-slate-700">
-                      {formatSl(p.slConLai)}
+                      {formatSl(p.sl_con_lai)}
                     </td>
                     <td className="px-2 py-2 text-right font-semibold tabular-nums text-slate-900">
-                      {formatTien(p.gtConLai)}
+                      {formatTien(p.gt_con_lai)}
                     </td>
                   </tr>
                 ))}
