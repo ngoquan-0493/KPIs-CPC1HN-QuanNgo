@@ -2,15 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import ProductSelector from "@/components/product-selector";
 import SsFilter from "@/components/ss-filter";
 import NvFilter from "@/components/nv-filter";
-import {
-  formatVnd,
-  fetchAllRows,
-  isExcludedSaleRow,
-  normalizeTinh,
-  normalizeUnit,
-  formatQty,
-  mergeSaleRowsByMonth,
-} from "@/lib/sales-channel";
+import { formatVnd, formatQty } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, SectionHeading, EmptyState, StatCard, Badge } from "@/components/ui";
 import { IconWallet, IconUsers, IconAlert, IconCheck } from "@/components/icons";
@@ -40,35 +32,33 @@ import { IconWallet, IconUsers, IconAlert, IconCheck } from "@/components/icons"
 // chieu voi ton kho/muc tieu ban hang theo don vi thuc te (hop/lo/vi...),
 // khong bi anh huong boi bien dong gia ban giua cac don. Doanh thu van giu
 // lam thong tin phu (hint) o vai cho.
-type SaleRow = {
-  ma_khach: string | null;
-  ten_khach: string | null;
-  tinh: string | null;
-  ngay: string | null;
-  doanh_thu: number | null;
-  so_luong: number | null;
-  don_vi_tinh: string | null;
-  nhom_khach_hang: string | null;
-  trang_thai?: string | null;
-  ma_nhan_vien: string | null;
-  ten_nhan_vien: string | null;
-};
-
-type ProductRow = { ten_san_pham_chuan_hoa: string | null; tong_doanh_thu: number | null };
+type ProductListItem = { name: string; revenue: number };
 
 type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
 
+// Mot dong khach hang tra ve tu RPC get_product_dashboard (Postgres
+// function) - da duoc tong hop san (revenue/so luong/so don trong 4 thang/
+// so sanh 3 thang gan nhat vs 3 thang truoc) thay vi tai toan bo dong ban
+// hang tho cua san pham roi tu gop trong JS. Xem migration
+// "add_product_dashboard_rpc".
 type CustomerAgg = {
   ma_khach: string;
   ten_khach: string;
   tinh: string;
   ma_nhan_vien: string | null;
   ten_nhan_vien: string | null;
-  revenueKy: number;
-  soLuongKy: number;
-  ordersIn4mo: number;
-  ngayMuaGanNhat: string;
-  monthlyQuantity: Map<string, number>;
+  ngay_gan_nhat: string;
+  revenue_ky: number;
+  so_luong_ky: number;
+  orders_in_4mo: number;
+  recent_sum: number;
+  baseline_sum: number;
+};
+
+type ProductDashboard = {
+  display_unit: string;
+  monthly_totals: { ym: string; tong: number }[];
+  customers: CustomerAgg[];
 };
 
 // Moc co dinh - khong tu dong lui theo nam nhu truoc, chi doi khi ASM yeu cau.
@@ -134,27 +124,15 @@ export default async function ProductsPage({
     return monthKeyOf(d.y, d.m0);
   });
 
-  // Danh sach san pham cho o chon - lay tu view tong hop theo thang, gop lai
-  // theo ten va sap xep theo tong doanh thu (toan bo lich su) de goi y san
-  // pham lon nhat len dau danh sach.
+  // Danh sach san pham cho o chon - RPC gop san theo ten + tong doanh thu
+  // ngay trong Postgres (335 san pham) thay vi phan trang 5.7k dong tho cua
+  // view tung thang roi tu gop trong JS (~6 vong round-trip truoc day).
   const [prodRes, empRes] = await Promise.all([
-    fetchAllRows<ProductRow>((from, to) =>
-      supabase.from("v_product_sales_summary").select("ten_san_pham_chuan_hoa,tong_doanh_thu").range(from, to),
-    ),
+    supabase.rpc("get_product_list"),
     supabase.from("Danh sach nhan vien").select("ma_nhan_vien,ten_nhan_vien,ss").neq("vi_tri", "ASM"),
   ]);
 
-  const revenueByProduct = new Map<string, number>();
-  for (const r of prodRes.data ?? []) {
-    if (!r.ten_san_pham_chuan_hoa) continue;
-    revenueByProduct.set(
-      r.ten_san_pham_chuan_hoa,
-      (revenueByProduct.get(r.ten_san_pham_chuan_hoa) ?? 0) + (r.tong_doanh_thu ?? 0),
-    );
-  }
-  const products = Array.from(revenueByProduct.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([name]) => name);
+  const products = ((prodRes.data ?? []) as ProductListItem[]).map((p) => p.name);
 
   const selectedProduct = sp.sp && products.includes(sp.sp) ? sp.sp : products[0];
 
@@ -169,7 +147,6 @@ export default async function ProductsPage({
   // ASM khac khong xuat hien o day) - dung chinh danh sach nay lam pham vi
   // mac dinh cua trang, vi bang sale la bang dung chung toan cong ty nen se
   // co ca ma NV cua cac ASM/nhom khac lan trong do.
-  const teamCodes = new Set(ssByCode.keys());
   const ssList = Array.from(new Set(Array.from(ssByCode.values()).filter((v): v is string => !!v))).sort((a, b) =>
     a.localeCompare(b),
   );
@@ -195,118 +172,66 @@ export default async function ProductsPage({
     );
   }
 
-  const cols =
-    "ma_khach,ten_khach,tinh,ngay,doanh_thu,so_luong,don_vi_tinh,nhom_khach_hang,ma_nhan_vien,ten_nhan_vien";
-  const [tongRes, hienTaiRes] = await Promise.all([
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase
-        .from("Du lieu sale tong")
-        .select(cols)
-        .eq("ten_san_pham_chuan_hoa", selectedProduct)
-        .gte("ngay", chartFetchStart)
-        .range(from, to),
-    ),
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase
-        .from("Du lieu sale thang hien tai")
-        .select(`${cols},trang_thai`)
-        .eq("ten_san_pham_chuan_hoa", selectedProduct)
-        .gte("ngay", chartFetchStart)
-        .range(from, to),
-    ),
-  ]);
-
-  const error = prodRes.error ?? empRes.error ?? tongRes.error ?? hienTaiRes.error;
-
-  // "allRows" = toan bo du lieu da fetch (tu chartFetchStart, vd 1/2024) -
-  // chi dung de tinh bieu do "cung ky". Cac chi so/danh sach khac tren trang
-  // chi dung "rows" (da loc lai tu windowStart, vd 1/2025) dung nhu ASM yeu cau.
-  let allRows = mergeSaleRowsByMonth(tongRes.data ?? [], hienTaiRes.data ?? [])
-    .filter((r) => !isExcludedSaleRow(r))
-    .filter((r) => teamCodes.has(normCode(r.ma_nhan_vien)));
+  // Pham vi ma NV duoc phep xem: team cua ASM dang dang nhap, tiep tuc thu
+  // hep theo bo loc SS/NV neu co - dung danh sach nay lam tham so cho RPC
+  // thay vi tu loc tung dong ban hang tho trong JS.
+  let allowedNvCodes = Array.from(ssByCode.keys());
   if (selectedSs) {
-    allRows = allRows.filter((r) => ssByCode.get(normCode(r.ma_nhan_vien)) === selectedSs);
+    allowedNvCodes = allowedNvCodes.filter((code) => ssByCode.get(code) === selectedSs);
   }
   if (selectedNv) {
-    allRows = allRows.filter((r) => normCode(r.ma_nhan_vien) === selectedNv);
+    allowedNvCodes = allowedNvCodes.filter((code) => code === selectedNv);
   }
-  const rows = allRows.filter((r) => (r.ngay ?? "") >= windowStart);
 
-  // Tong san luong theo thang (khong tach khach hang) tren toan bo du lieu da
-  // fetch - lam nguon cho bieu do va so sanh cung ky.
+  const dashRes = await supabase.rpc("get_product_dashboard", {
+    p_product: selectedProduct,
+    p_ma_nv_list: allowedNvCodes,
+    p_chart_start: chartFetchStart,
+    p_window_start: windowStart,
+    p_cutoff4: cutoff4,
+    p_recent_keys: recentKeys,
+    p_baseline_keys: baselineKeys,
+  });
+
+  const error = prodRes.error ?? empRes.error ?? dashRes.error;
+  const dash = (dashRes.data ?? null) as ProductDashboard | null;
+
+  const displayUnit = dash?.display_unit ?? "";
+
+  // Tong san luong theo thang (khong tach khach hang) tren toan bo du lieu -
+  // lam nguon cho bieu do va so sanh cung ky.
   const monthlyTotalsAll = new Map<string, number>();
-  for (const r of allRows) {
-    if (!r.ngay) continue;
-    const key = r.ngay.slice(0, 7);
-    monthlyTotalsAll.set(key, (monthlyTotalsAll.get(key) ?? 0) + (r.so_luong ?? 0));
+  for (const m of dash?.monthly_totals ?? []) {
+    monthlyTotalsAll.set(m.ym, m.tong);
   }
 
-  const customers = new Map<string, CustomerAgg>();
-  const donViCount = new Map<string, number>();
-  for (const r of rows) {
-    if (!r.ma_khach || !r.ngay) continue;
-    const cur = customers.get(r.ma_khach) ?? {
-      ma_khach: r.ma_khach,
-      ten_khach: r.ten_khach || r.ma_khach,
-      tinh: normalizeTinh(r.tinh),
-      ma_nhan_vien: r.ma_nhan_vien,
-      ten_nhan_vien: r.ten_nhan_vien,
-      revenueKy: 0,
-      soLuongKy: 0,
-      ordersIn4mo: 0,
-      ngayMuaGanNhat: r.ngay,
-      monthlyQuantity: new Map<string, number>(),
-    };
-    cur.revenueKy += r.doanh_thu ?? 0;
-    cur.soLuongKy += r.so_luong ?? 0;
-    if (r.ngay >= cutoff4) cur.ordersIn4mo += 1;
-    if (r.ngay > cur.ngayMuaGanNhat) {
-      cur.ngayMuaGanNhat = r.ngay;
-      // Cap nhat theo dong ban gan nhat de hien thi dung ten/tinh/NV hien hanh.
-      cur.ten_khach = r.ten_khach || cur.ten_khach;
-      cur.tinh = r.tinh ? normalizeTinh(r.tinh) : cur.tinh;
-      cur.ma_nhan_vien = r.ma_nhan_vien;
-      cur.ten_nhan_vien = r.ten_nhan_vien;
-    }
-    const key = r.ngay.slice(0, 7);
-    cur.monthlyQuantity.set(key, (cur.monthlyQuantity.get(key) ?? 0) + (r.so_luong ?? 0));
-    customers.set(r.ma_khach, cur);
-
-    const unit = normalizeUnit(r.don_vi_tinh);
-    if (unit) donViCount.set(unit, (donViCount.get(unit) ?? 0) + 1);
-  }
-
-  // Don vi tinh hien thi cho san pham dang chon - lay bien the pho bien nhat
-  // (vi cung 1 don vi co the ghi khac nhau giua cac dong, vd "LO" vs "Lọ").
-  const displayUnit = [...donViCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-
-  const allCustomers = Array.from(customers.values());
+  const allCustomers = dash?.customers ?? [];
   const soKhachTrongKy = allCustomers.length;
-  const tongDoanhThuKy = allCustomers.reduce((s, c) => s + c.revenueKy, 0);
-  const tongSoLuongKy = allCustomers.reduce((s, c) => s + c.soLuongKy, 0);
+  const tongDoanhThuKy = allCustomers.reduce((s, c) => s + c.revenue_ky, 0);
+  const tongSoLuongKy = allCustomers.reduce((s, c) => s + c.so_luong_ky, 0);
 
-  const khachSong = allCustomers.filter((c) => c.ordersIn4mo >= 2);
+  const khachSong = allCustomers.filter((c) => c.orders_in_4mo >= 2);
   const khachBoQuen = allCustomers
-    .filter((c) => c.ordersIn4mo < 2)
-    .sort((a, b) => b.ngayMuaGanNhat.localeCompare(a.ngayMuaGanNhat) || b.soLuongKy - a.soLuongKy);
+    .filter((c) => c.orders_in_4mo < 2)
+    .sort((a, b) => b.ngay_gan_nhat.localeCompare(a.ngay_gan_nhat) || b.so_luong_ky - a.so_luong_ky);
 
-  const topKhach = [...allCustomers].sort((a, b) => b.soLuongKy - a.soLuongKy).slice(0, TOP_N);
+  const topKhach = [...allCustomers].sort((a, b) => b.so_luong_ky - a.so_luong_ky).slice(0, TOP_N);
 
   const soLuongByTinh = new Map<string, number>();
   for (const c of allCustomers) {
-    soLuongByTinh.set(c.tinh, (soLuongByTinh.get(c.tinh) ?? 0) + c.soLuongKy);
+    soLuongByTinh.set(c.tinh, (soLuongByTinh.get(c.tinh) ?? 0) + c.so_luong_ky);
   }
   const tinhSorted = Array.from(soLuongByTinh.entries()).sort((a, b) => b[1] - a[1]);
   const topTinh = tinhSorted.slice(0, 8);
 
+  // recent_sum/baseline_sum da duoc RPC tinh san (tu monthlyQuantity server-
+  // side) - chi con loc/sap xep, khong can cong don lai trong JS.
   type TrendItem = { customer: CustomerAgg; recentSum: number; baselineSum: number; pct: number };
   const trendCandidates: TrendItem[] = [];
   for (const c of allCustomers) {
-    const baselineSum = baselineKeys.reduce((s, k) => s + (c.monthlyQuantity.get(k) ?? 0), 0);
-    if (baselineSum <= 0) continue; // khong co nen so sanh (khach moi/it lich su) - bo qua thay vi bao giam oan
-    const recentSum = recentKeys.reduce((s, k) => s + (c.monthlyQuantity.get(k) ?? 0), 0);
-    const pct = ((recentSum - baselineSum) / baselineSum) * 100;
-    trendCandidates.push({ customer: c, recentSum, baselineSum, pct });
+    if (c.baseline_sum <= 0) continue; // khong co nen so sanh (khach moi/it lich su) - bo qua thay vi bao giam oan
+    const pct = ((c.recent_sum - c.baseline_sum) / c.baseline_sum) * 100;
+    trendCandidates.push({ customer: c, recentSum: c.recent_sum, baselineSum: c.baseline_sum, pct });
   }
   const tangTruong = trendCandidates
     .filter((t) => t.pct >= GROWTH_THRESHOLD)
@@ -317,7 +242,7 @@ export default async function ProductsPage({
     .sort((a, b) => a.pct - b.pct)
     .slice(0, TOP_N);
 
-  const maxKhach = Math.max(1, ...topKhach.map((c) => c.soLuongKy));
+  const maxKhach = Math.max(1, ...topKhach.map((c) => c.so_luong_ky));
   const maxTinh = Math.max(1, ...topTinh.map(([, v]) => v));
 
   // Bieu do san luong theo thang, tu T1/2025 den thang hien tai, kem cot doi
@@ -426,7 +351,7 @@ export default async function ProductsPage({
         <Card>
           <SectionHeading title="Khách hàng sản lượng cao nhất" count={topKhach.length} />
           <BarList
-            items={topKhach.map((c) => [ghepTenMa(c.ten_khach, c.ma_khach), c.soLuongKy] as [string, number])}
+            items={topKhach.map((c) => [ghepTenMa(c.ten_khach, c.ma_khach), c.so_luong_ky] as [string, number])}
             max={maxKhach}
             format={(n) => formatQty(n, displayUnit)}
           />
@@ -491,9 +416,9 @@ export default async function ProductsPage({
                     <td className="py-2.5 pr-3 text-slate-700">
                       {c.ma_nhan_vien ? ghepTenMa(c.ten_nhan_vien, c.ma_nhan_vien) : "—"}
                     </td>
-                    <td className="py-2.5 pr-3 text-slate-700">{c.ngayMuaGanNhat}</td>
-                    <td className="py-2.5 pr-3 tabular-nums text-slate-700">{c.ordersIn4mo}</td>
-                    <td className="py-2.5 tabular-nums text-slate-700">{formatQty(c.soLuongKy, displayUnit)}</td>
+                    <td className="py-2.5 pr-3 text-slate-700">{c.ngay_gan_nhat}</td>
+                    <td className="py-2.5 pr-3 tabular-nums text-slate-700">{c.orders_in_4mo}</td>
+                    <td className="py-2.5 tabular-nums text-slate-700">{formatQty(c.so_luong_ky, displayUnit)}</td>
                   </tr>
                 ))}
               </tbody>
