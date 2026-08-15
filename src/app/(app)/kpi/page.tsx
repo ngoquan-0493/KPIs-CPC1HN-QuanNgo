@@ -4,7 +4,7 @@ import CodeMoiDetail from "@/components/code-moi-detail";
 import MonthSelector from "@/components/month-selector";
 import SsFilter from "@/components/ss-filter";
 import NvFilter from "@/components/nv-filter";
-import { formatVnd, isExcludedSaleRow, fetchAllRows, preferClosedMonthRows } from "@/lib/sales-channel";
+import { formatVnd } from "@/lib/sales-channel";
 import { ghepTenMa, hienThiKhach } from "@/lib/display";
 import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
 import { IconClock, IconUsers } from "@/components/icons";
@@ -42,11 +42,6 @@ type EmployeeRow = {
   SS: string | null;
 };
 
-type ChamCongRow = {
-  ma_nhan_vien: string | null;
-  ma_khach: string | null;
-};
-
 type PhanLoaiRow = {
   thang_danh_gia: string | null;
   ma_nhan_vien: string | null;
@@ -57,19 +52,19 @@ type PhanLoaiRow = {
   muc_do_canh_bao: string | null;
 };
 
-type VisitRow = {
-  ma_nhan_vien: string | null;
-  ma_khach: string | null;
-  thoi_gian_checkin: string | null;
-};
-
-type RevenueRow = {
-  ma_nhan_vien: string | null;
-  doanh_thu: number | null;
-  nhom_khach_hang: string | null;
-  trang_thai?: string | null;
-  ma_khach: string | null;
-  ten_san_pham_chuan_hoa: string | null;
+// Ket qua tra ve tu RPC get_kpi_market_activity/get_kpi_last_visit (Postgres
+// function) - thay the viec tai TOAN BO dong cham cong/doanh so tho cua
+// thang ve JS de tu dem/gop, gio Postgres tong hop san. Xem migration
+// "add_kpi_market_activity_rpc" / "split_kpi_market_activity_and_last_visit_rpc".
+type MarketActivityRow = { code: string; calls: number; khach: number };
+type VisitCountRow = { code: string; ma_khach: string; so_lan: number };
+type LapDonKeyRow = { code: string; ma_khach: string; san_pham: string };
+type LastVisitRow = { code: string; ma_khach: string; last_checkin: string };
+type KpiMarketActivity = {
+  source: "tong" | "hien_tai";
+  market_activity: MarketActivityRow[];
+  visit_count: VisitCountRow[];
+  da_lap_don: LapDonKeyRow[];
 };
 
 // thang_danh_gia in phan_loai_khach_hang_can_lap_don is text like "T6/2026";
@@ -312,30 +307,7 @@ export default async function KpiPage({
     thangDanhGia === 12 ? [namDanhGia + 1, 1] : [namDanhGia, thangDanhGia + 1];
   const dauThangSau = `${namThangSau}-${String(thangThangSau).padStart(2, "0")}-01`;
 
-  const chamCongThangPromise = Promise.all([
-    fetchAllRows<ChamCongRow>((from, to) =>
-      supabase
-        .from("Du lieu cham cong 3 thang")
-        .select("ma_nhan_vien,ma_khach")
-        .gte("thoi_gian_checkin", dauThang)
-        .lt("thoi_gian_checkin", dauThangSau)
-        .range(from, to),
-    ),
-    fetchAllRows<ChamCongRow>((from, to) =>
-      supabase
-        .from("Du lieu cham cong thang hien tai")
-        .select("ma_nhan_vien,ma_khach")
-        .gte("thoi_gian_checkin", dauThang)
-        .lt("thoi_gian_checkin", dauThangSau)
-        .range(from, to),
-    ),
-  ]).then(([a, b]) => ({
-    data: [...a.data, ...b.data],
-    error: a.error ?? b.error,
-  }));
-
-  const [kpiRes, empRes, chamCongRes, phanLoaiRes, revenueTongRes, revenueHienTaiRes] =
-    await Promise.all([
+  const [kpiRes, empRes, marketActivityRes, phanLoaiRes] = await Promise.all([
     supabase
       .from("Chi tieu KPIs")
       .select(
@@ -347,60 +319,38 @@ export default async function KpiPage({
       .select('"Mã nhân viên":ma_nhan_vien,"Tên nhân viên":ten_nhan_vien,"Vị trí":vi_tri,SS:ss')
       .neq("vi_tri", "ASM")
       .order("ten_nhan_vien", { ascending: true }),
-    chamCongThangPromise,
+    // Tong hop cham cong/doanh so ca thang chay trong Postgres (RPC) thay vi
+    // tai toan bo dong tho ve JS - xem cac ham nay trong migration.
+    supabase.rpc("get_kpi_market_activity", {
+      p_nam: namDanhGia ?? 0,
+      p_thang: thangDanhGia ?? 0,
+      p_dau_thang: dauThang,
+      p_dau_thang_sau: dauThangSau,
+    }),
     supabase
       .from("phan_loai_khach_hang_can_lap_don")
       .select(
         "thang_danh_gia,ma_nhan_vien,ma_khach,ten_khach,ten_san_pham,don_gan_nhat,muc_do_canh_bao",
       )
       .limit(5000),
-    fetchAllRows<RevenueRow>((from, to) =>
-      supabase
-        .from("Du lieu sale tong")
-        .select("ma_nhan_vien,doanh_thu,nhom_khach_hang,ma_khach,ten_san_pham_chuan_hoa")
-        .eq("nam", namDanhGia ?? 0)
-        .eq("thang", thangDanhGia ?? 0)
-        .range(from, to),
-    ),
-    fetchAllRows<RevenueRow>((from, to) =>
-      supabase
-        .from("Du lieu sale thang hien tai")
-        .select(
-          "ma_nhan_vien,doanh_thu,nhom_khach_hang,trang_thai,ma_khach,ten_san_pham_chuan_hoa",
-        )
-        .eq("nam", namDanhGia ?? 0)
-        .eq("thang", thangDanhGia ?? 0)
-        .range(from, to),
-    ),
   ]);
+
+  const marketActivity = (marketActivityRes.data ?? null) as KpiMarketActivity | null;
 
   // Cặp (NV, mã khách, sản phẩm) đã phát sinh đơn hàng thực tế trong tháng
   // đang xem — dùng để biết khách "cần tập trung" nào đã được lặp đơn. Doanh
   // số theo kênh (kê đơn - phòng mạch / thầu) đã chuyển sang đọc trực tiếp từ
   // "Chi tieu KPIs" (doanhSoSummary) nên không cần tự tổng hợp lại ở đây nữa.
   const daLapDonSet = new Set<string>();
-  for (const r of preferClosedMonthRows(
-    (revenueTongRes.data ?? []) as RevenueRow[],
-    (revenueHienTaiRes.data ?? []) as RevenueRow[],
-  )) {
-    if (isExcludedSaleRow(r)) continue;
-    const key = normCode(r.ma_nhan_vien);
-    if (!key) continue;
-
-    const maKhach = (r.ma_khach ?? "").trim().toUpperCase();
-    const sanPham = (r.ten_san_pham_chuan_hoa ?? "").trim().toLowerCase();
-    if (maKhach && sanPham) daLapDonSet.add(`${key}|${maKhach}|${sanPham}`);
+  for (const r of marketActivity?.da_lap_don ?? []) {
+    daLapDonSet.add(`${r.code}|${r.ma_khach}|${r.san_pham}`);
   }
 
   // Số lần viếng thăm (check-in) của từng cặp (NV, mã khách) trong tháng
   // đang xem — dùng chung dữ liệu chấm công đã lọc đúng tháng ở trên.
   const visitCountThisMonth = new Map<string, number>();
-  for (const r of (chamCongRes.data ?? []) as ChamCongRow[]) {
-    const key = normCode(r.ma_nhan_vien);
-    const maKhach = (r.ma_khach ?? "").trim().toUpperCase();
-    if (!key || !maKhach) continue;
-    const mapKey = `${key}|${maKhach}`;
-    visitCountThisMonth.set(mapKey, (visitCountThisMonth.get(mapKey) ?? 0) + 1);
+  for (const r of marketActivity?.visit_count ?? []) {
+    visitCountThisMonth.set(`${r.code}|${r.ma_khach}`, r.so_lan);
   }
 
   // Chỉ giữ kỳ phân tích mới nhất của danh sách Khẩn/Ưu tiên/Mồ côi.
@@ -419,32 +369,13 @@ export default async function KpiPage({
         .filter(Boolean),
     ),
   );
-  const [visit3ThangRes, visitHienTaiRes] = await Promise.all([
-    fetchAllRows<VisitRow>((from, to) =>
-      supabase
-        .from("Du lieu cham cong 3 thang")
-        .select("ma_nhan_vien,ma_khach,thoi_gian_checkin")
-        .in("ma_khach", focusCustomerCodes)
-        .range(from, to),
-    ),
-    fetchAllRows<VisitRow>((from, to) =>
-      supabase
-        .from("Du lieu cham cong thang hien tai")
-        .select("ma_nhan_vien,ma_khach,thoi_gian_checkin")
-        .in("ma_khach", focusCustomerCodes)
-        .range(from, to),
-    ),
-  ]);
+  const { data: lastVisitData } = await supabase.rpc("get_kpi_last_visit", {
+    p_focus_ma_khach: focusCustomerCodes,
+  });
 
   const lastVisitByKey = new Map<string, string>();
-  for (const r of [
-    ...((visit3ThangRes.data ?? []) as VisitRow[]),
-    ...((visitHienTaiRes.data ?? []) as VisitRow[]),
-  ]) {
-    if (!r.thoi_gian_checkin) continue;
-    const key = `${normCode(r.ma_nhan_vien)}|${(r.ma_khach ?? "").trim().toUpperCase()}`;
-    const cur = lastVisitByKey.get(key);
-    if (!cur || r.thoi_gian_checkin > cur) lastVisitByKey.set(key, r.thoi_gian_checkin);
+  for (const r of (lastVisitData ?? []) as LastVisitRow[]) {
+    lastVisitByKey.set(`${r.code}|${r.ma_khach}`, r.last_checkin);
   }
 
   const phanLoaiByCode = new Map<string, PhanLoaiRow[]>();
@@ -482,28 +413,15 @@ export default async function KpiPage({
     }
   }
 
-  const error =
-    kpiRes.error ??
-    empRes.error ??
-    chamCongRes.error ??
-    phanLoaiRes.error ??
-    revenueTongRes.error ??
-    revenueHienTaiRes.error;
+  const error = kpiRes.error ?? empRes.error ?? marketActivityRes.error ?? phanLoaiRes.error;
 
   // Hoạt động thị trường trong tháng đang xem (selectedMonth, không phải
   // tháng hiện tại theo đồng hồ) theo NV: số call (lượt chấm công) và số
-  // khách hàng đã viếng thăm (đếm mã khách duy nhất). Loại trừ check-in tại
-  // Văn phòng (mã khách bắt đầu bằng "VP") — không phải hoạt động thị trường.
-  const chamCongByCode = new Map<string, { calls: number; khach: Set<string> }>();
-  for (const r of (chamCongRes.data ?? []) as ChamCongRow[]) {
-    const maKhach = (r.ma_khach ?? "").trim();
-    if (maKhach.toUpperCase().startsWith("VP")) continue;
-    const key = normCode(r.ma_nhan_vien);
-    if (!key) continue;
-    const cur = chamCongByCode.get(key) ?? { calls: 0, khach: new Set<string>() };
-    cur.calls += 1;
-    if (maKhach) cur.khach.add(maKhach);
-    chamCongByCode.set(key, cur);
+  // khách hàng đã viếng thăm (đếm mã khách duy nhất) - da loai tru check-in
+  // tai Van phong ("VP...") ngay trong RPC get_kpi_market_activity.
+  const chamCongByCode = new Map<string, { calls: number; khach: number }>();
+  for (const r of marketActivity?.market_activity ?? []) {
+    chamCongByCode.set(r.code, { calls: r.calls, khach: r.khach });
   }
 
   const kpiByCode = new Map<string, KpiRow[]>();
@@ -536,7 +454,7 @@ export default async function KpiPage({
     name: e["Tên nhân viên"] ?? e["Mã nhân viên"],
     kpis: kpiByCode.get(normCode(e["Mã nhân viên"])) ?? [],
     soCall: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.calls ?? 0,
-    soKhach: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.khach.size ?? 0,
+    soKhach: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.khach ?? 0,
     focus: phanLoaiByCode.get(normCode(e["Mã nhân viên"])) ?? [],
   }));
 
