@@ -52,6 +52,32 @@ type PhanLoaiRow = {
   muc_do_canh_bao: string | null;
 };
 
+// Ket qua tra ve tu RPC get_cong_viec_tuan_summary (Postgres function) - tom
+// tat bang "ke_hoach_cong_viec_tuan" (nguon rieng, do "Đề xuất AI" + cac
+// workflow n8n khac tao ra: qua han tu dong, vua ban giao, AI de xuat...) cho
+// 1 NV trong thang dang xem, de doi chieu voi KPI/chi tieu lap don cua chinh
+// NV do. KHONG hien thi tho tung dong - bang nay rat lon (co NV toi 700+
+// dong/thang do co che "carried_forward": viec chua xong tu dong tao dong
+// MOI cho tuan sau), RPC da gop theo "cong viec logic" (noi cac dong carried
+// forward cung 1 chuoi qua cong_viec_goc_id) truoc khi dem, tranh dem trung.
+type CongViecKhan = {
+  noi_dung: string | null;
+  ten_khach: string | null;
+  ma_khach: string | null;
+  ten_san_pham: string | null;
+  han_hoan_thanh: string | null;
+  nguon_tao: string | null;
+};
+type CongViecTuanSummary = {
+  tong_viec: number;
+  dang_mo: number;
+  da_hoan_thanh: number;
+  qua_han: number;
+  khan_dang_mo: number;
+  uu_tien_dang_mo: number;
+  top_khan: CongViecKhan[];
+};
+
 // Ket qua tra ve tu RPC get_kpi_market_activity/get_kpi_last_visit (Postgres
 // function) - thay the viec tai TOAN BO dong cham cong/doanh so tho cua
 // thang ve JS de tu dem/gop, gio Postgres tong hop san. Xem migration
@@ -111,6 +137,13 @@ function resultColor(ketQua: string | null) {
 // so normalize to digits-only before matching KPI rows to employees.
 function normCode(code: string | null | undefined) {
   return (code ?? "").replace(/\D/g, "").replace(/^0+/, "") || code || "";
+}
+
+function formatNgayCongViec(d: string | null) {
+  if (!d) return null;
+  const [y, m, day] = d.split("-");
+  if (!y || !m || !day) return null;
+  return `${day}/${m}`;
 }
 
 const DOANH_SO_CHI_TIEU = ["Doanh số kê đơn - phòng mạch", "Doanh số thầu"];
@@ -458,6 +491,29 @@ export default async function KpiPage({
     scopedEmployees = scopedEmployees.filter((e) => normCode(e["Mã nhân viên"]) === selectedNv);
   }
 
+  // Tom tat "ke_hoach_cong_viec_tuan" (bang cua "Đề xuất AI") cho dung tap NV
+  // dang xem trong thang nay - RPC gop san server-side (xem
+  // get_cong_viec_tuan_summary), khong tai tho vi bang goc rat lon (co NV
+  // toi vai tram dong/thang).
+  const scopedNvCodes = Array.from(
+    new Set(scopedEmployees.map((e) => normCode(e["Mã nhân viên"])).filter(Boolean)),
+  );
+  const congViecRes =
+    scopedNvCodes.length > 0
+      ? await supabase.rpc("get_cong_viec_tuan_summary", {
+          p_ma_nv_list: scopedNvCodes,
+          p_thang_bat_dau: dauThang,
+          p_thang_ket_thuc: dauThangSau,
+          p_top_khan: 8,
+        })
+      : { data: null, error: null };
+  const congViecByCode = new Map<string, CongViecTuanSummary>();
+  for (const [ma, v] of Object.entries(
+    (congViecRes.data ?? {}) as Record<string, CongViecTuanSummary>,
+  )) {
+    congViecByCode.set(normCode(ma), v);
+  }
+
   const groups = scopedEmployees.map((e) => ({
     code: normCode(e["Mã nhân viên"]),
     name: e["Tên nhân viên"] ?? e["Mã nhân viên"],
@@ -465,6 +521,7 @@ export default async function KpiPage({
     soCall: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.calls ?? 0,
     soKhach: chamCongByCode.get(normCode(e["Mã nhân viên"]))?.khach ?? 0,
     focus: phanLoaiByCode.get(normCode(e["Mã nhân viên"])) ?? [],
+    congViec: congViecByCode.get(normCode(e["Mã nhân viên"])) ?? null,
   }));
 
   function formatVisit(iso: string | undefined) {
@@ -503,7 +560,7 @@ export default async function KpiPage({
       )}
 
       <div className="space-y-6">
-        {groups.map(({ code, name, kpis, soCall, soKhach, focus }) => {
+        {groups.map(({ code, name, kpis, soCall, soKhach, focus, congViec }) => {
           const codeMoi = chiTieuSummary(kpis, "Code mới");
           const moiMoiSptt = nguongNhomSummary(kpis, "Mở mới SPTT");
           const moiMoi = nguongNhomSummary(kpis, "Mở mới");
@@ -873,6 +930,84 @@ export default async function KpiPage({
                     </tbody>
                   </table>
                 </div>
+              </div>
+            )}
+            {congViec && congViec.tong_viec > 0 && (
+              <div className="mt-4 border-t border-slate-100 pt-3">
+                <h3 className="mb-2 text-xs font-semibold text-slate-900">
+                  Công việc tuần (từ &quot;Đề xuất AI&quot;)
+                </h3>
+                <div className="mb-2 flex flex-wrap gap-1.5 text-[11px]">
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium text-slate-600">
+                    {congViec.dang_mo} đang mở
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-medium ${
+                      congViec.qua_han > 0
+                        ? "bg-red-100 text-red-700"
+                        : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {congViec.qua_han} quá hạn
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-medium ${
+                      congViec.khan_dang_mo > 0
+                        ? "bg-red-100 text-red-700"
+                        : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {congViec.khan_dang_mo} khẩn
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-medium ${
+                      congViec.uu_tien_dang_mo > 0
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {congViec.uu_tien_dang_mo} ưu tiên
+                  </span>
+                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-medium text-emerald-700">
+                    {congViec.da_hoan_thanh} đã hoàn thành trong tháng
+                  </span>
+                </div>
+                {congViec.top_khan.length > 0 && (
+                  <>
+                    <ul className="space-y-1">
+                      {congViec.top_khan.map((v, i) => {
+                        const han = formatNgayCongViec(v.han_hoan_thanh);
+                        return (
+                          <li
+                            key={i}
+                            className="rounded-lg bg-red-50/70 px-2.5 py-1.5 text-xs text-slate-700"
+                          >
+                            <span className="font-medium text-slate-900">
+                              {v.noi_dung ?? "—"}
+                            </span>
+                            {v.ten_khach && (
+                              <span className="text-slate-500">
+                                {" "}
+                                — {v.ten_khach}
+                                {v.ma_khach ? ` (${v.ma_khach})` : ""}
+                              </span>
+                            )}
+                            {v.ten_san_pham && (
+                              <span className="text-slate-500"> · {v.ten_san_pham}</span>
+                            )}
+                            {han && <span className="ml-1 text-red-600">· hạn {han}</span>}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {congViec.khan_dang_mo > congViec.top_khan.length && (
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        và {congViec.khan_dang_mo - congViec.top_khan.length} việc khẩn khác chưa
+                        hiển thị — xem đầy đủ ở trang &quot;Đề xuất AI&quot;.
+                      </p>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </Card>
