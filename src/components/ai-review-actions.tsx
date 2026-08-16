@@ -726,7 +726,6 @@ export function XacNhanKetQuaCard({
 
     loadChamCong();
     loadDonHang();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedback.ma_nhan_vien_thuc_hien, tuanBatDau, hanHoanThanh]);
 
   function handleToggleChamCong() {
