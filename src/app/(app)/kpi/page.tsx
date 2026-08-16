@@ -495,8 +495,14 @@ export default async function KpiPage({
   // dang xem trong thang nay - RPC gop san server-side (xem
   // get_cong_viec_tuan_summary), khong tai tho vi bang goc rat lon (co NV
   // toi vai tram dong/thang).
+  // QUAN TRONG: phai truyen ma NGUYEN GOC (KHONG qua normCode) - cot
+  // ma_nhan_vien trong ke_hoach_cong_viec_tuan giu nguyen so 0 dau giong
+  // "Danh sach nhan vien" (vd "018670"), RPC so khop CHINH XAC (=any(...)),
+  // truyen ma da strip so 0 (vd "18670") se khong khop dong nao va tra ve
+  // rong - day chinh la loi khien khoi nay khong hien cho bat ky NV nao sau
+  // khi deploy lan dau, da xac nhan qua du lieu thuc te.
   const scopedNvCodes = Array.from(
-    new Set(scopedEmployees.map((e) => normCode(e["Mã nhân viên"])).filter(Boolean)),
+    new Set(scopedEmployees.map((e) => e["Mã nhân viên"]).filter(Boolean)),
   );
   const congViecRes =
     scopedNvCodes.length > 0
@@ -552,6 +558,11 @@ export default async function KpiPage({
       {error && (
         <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">
           Lỗi tải dữ liệu: {error.message}
+        </p>
+      )}
+      {congViecRes.error && (
+        <p className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-700">
+          Lỗi tải "Công việc tuần": {congViecRes.error.message}
         </p>
       )}
 
