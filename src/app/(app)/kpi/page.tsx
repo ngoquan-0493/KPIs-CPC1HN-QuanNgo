@@ -562,7 +562,7 @@ export default async function KpiPage({
       )}
       {congViecRes.error && (
         <p className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-700">
-          Lỗi tải "Công việc tuần": {congViecRes.error.message}
+          Lỗi tải &quot;Công việc tuần&quot;: {congViecRes.error.message}
         </p>
       )}
 
