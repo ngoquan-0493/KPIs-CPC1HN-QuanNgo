@@ -19,17 +19,20 @@ export type Employee = {
 // trang ma khong doi logic/du lieu tra ve.
 export const getCurrentEmployee = cache(async (): Promise<Employee | null> => {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user?.email) return null;
+  // getClaims() thay cho getUser(): xac thuc JWT bang JWKS cache cuc bo khi
+  // project dung asymmetric signing keys, khong phai goi mang toi Auth
+  // server moi lan - giam 1 vong Ohio<->Tokyo nua so voi truoc (xem ghi chu
+  // trong middleware.ts).
+  const { data: claimsData } = await supabase.auth.getClaims();
+  const email = claimsData?.claims?.email;
+  if (!email) return null;
 
   const { data } = await supabase
     .from("Danh sach nhan vien")
     .select(
       '"Mã nhân viên":ma_nhan_vien,"Tên nhân viên":ten_nhan_vien,"Vị trí":vi_tri,SS:ss,ASM:asm,"Địa chỉ email":dia_chi_email',
     )
-    .ilike("dia_chi_email", user.email)
+    .ilike("dia_chi_email", email)
     .limit(1)
     .maybeSingle();
 

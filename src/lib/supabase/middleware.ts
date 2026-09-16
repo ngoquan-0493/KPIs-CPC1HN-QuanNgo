@@ -23,9 +23,15 @@ export async function updateSession(request: NextRequest) {
     },
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // getClaims() xac thuc JWT bang JWKS cache cuc bo (khong goi mang) khi
+  // project dung asymmetric signing keys, thay vi getUser() luon phai goi
+  // Auth server qua mang moi request - giam 1 vong Ohio<->Tokyo tren tong
+  // 3-4 vong hien co cho moi lan tai trang. Neu project chua bat asymmetric
+  // keys, getClaims() se tu dong fallback ve hanh vi nhu getUser() (van goi
+  // mang) nen doi ten ham khong lam hong gi, chi thuc su nhanh hon sau khi
+  // bat "JWT Signing Keys" (asymmetric) trong Supabase Dashboard.
+  const { data } = await supabase.auth.getClaims();
+  const user = data?.claims;
 
   const isLoginPage = request.nextUrl.pathname.startsWith("/login");
 
