@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import dynamic from "next/dynamic";
 import MoMoiSpttDetail from "@/components/mo-moi-sptt-detail";
 import CodeMoiDetail from "@/components/code-moi-detail";
 import MonthSelector from "@/components/month-selector";
@@ -10,13 +11,20 @@ import { Card, PageHeader, EmptyState, Avatar, Badge } from "@/components/ui";
 import { IconClock, IconUsers } from "@/components/icons";
 import { getCurrentEmployee } from "@/lib/current-employee";
 import KpiTabs from "@/components/kpi-tabs";
-import KpiXayDung from "@/components/kpi-xay-dung";
-import KpiDuyet from "@/components/kpi-duyet";
 import {
   layDanhSachKpiTheoThang,
   layTatCaKpiTheoThang,
   layTenKhachTheoMa,
 } from "./build-actions";
+
+// Chi tai code cua 2 component nay (27KB + 24KB, tab "Tien do" mac dinh
+// khong dung den) khi thuc su render tab "xay-dung"/"duyet" - truoc day
+// import tinh (static) khien bundle cua serverless function cho CA route
+// /kpi luon gom ca 2 file nay du dang xem tab nao, lam nang va cham cold
+// start ngay ca cho tab mac dinh (tab da do la cham nhat qua kiem tra
+// thuc te: 5.7-7.3s cho RSC navigation trong khi truy van DB chi ~0.6s).
+const KpiXayDung = dynamic(() => import("@/components/kpi-xay-dung"));
+const KpiDuyet = dynamic(() => import("@/components/kpi-duyet"));
 
 type KpiRow = {
   "Mã Nhân viên": string;
@@ -411,13 +419,75 @@ export default async function KpiPage({
         .filter(Boolean),
     ),
   );
-  const { data: lastVisitData } = await supabase.rpc("get_kpi_last_visit", {
-    p_focus_ma_khach: focusCustomerCodes,
-  });
+
+  const kpiRows = (kpiRes.data ?? []) as KpiRow[];
+  const employees = (empRes.data ?? []) as EmployeeRow[];
+
+  // "Chi tieu KPIs" chi co ma_khach, khong co ten_khach - tra rieng tu
+  // khach_hang_master de hien cap Ten (Ma) trong bang chi tieu, thay vi chi
+  // hien mot chuoi ma kho tra cuu.
+  const kpiMaKhachList = Array.from(
+    new Set(kpiRows.map((k) => (k["Mã khách"] ?? "").trim()).filter(Boolean)),
+  );
+
+  const ssList = Array.from(new Set(employees.map((e) => e.SS).filter((v): v is string => !!v))).sort(
+    (a, b) => a.localeCompare(b),
+  );
+  let scopedEmployees = selectedSs ? employees.filter((e) => e.SS === selectedSs) : employees;
+  const employeeOptions = scopedEmployees
+    .map((e) => ({ code: normCode(e["Mã nhân viên"]), name: e["Tên nhân viên"] ?? e["Mã nhân viên"] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (selectedNv) {
+    scopedEmployees = scopedEmployees.filter((e) => normCode(e["Mã nhân viên"]) === selectedNv);
+  }
+
+  // Tom tat "ke_hoach_cong_viec_tuan" (bang cua "Đề xuất AI") cho dung tap NV
+  // dang xem trong thang nay - RPC gop san server-side (xem
+  // get_cong_viec_tuan_summary), khong tai tho vi bang goc rat lon (co NV
+  // toi vai tram dong/thang).
+  // QUAN TRONG: phai truyen ma NGUYEN GOC (KHONG qua normCode) - cot
+  // ma_nhan_vien trong ke_hoach_cong_viec_tuan giu nguyen so 0 dau giong
+  // "Danh sach nhan vien" (vd "018670"), RPC so khop CHINH XAC (=any(...)),
+  // truyen ma da strip so 0 (vd "18670") se khong khop dong nao va tra ve
+  // rong - day chinh la loi khien khoi nay khong hien cho bat ky NV nao sau
+  // khi deploy lan dau, da xac nhan qua du lieu thuc te.
+  const scopedNvCodes = Array.from(
+    new Set(scopedEmployees.map((e) => e["Mã nhân viên"]).filter(Boolean)),
+  );
+
+  // 3 truy van sau day KHONG phu thuoc lan nhau (chi can du lieu tu
+  // Promise.all dau tien o tren + searchParams) nhung truoc day chay TUAN
+  // TU (moi cai doi cai truoc xong) - gay them 2 vong round-trip Ohio<->Tokyo
+  // khong can thiet cho moi lan tai trang /kpi. Gop lai chay SONG SONG bang
+  // 1 Promise.all giam con 1 vong, khong doi bat ky logic/dieu kien nao
+  // (van giu nguyen: bo qua truy van khach_hang_master neu kpiMaKhachList
+  // rong, bo qua get_cong_viec_tuan_summary neu scopedNvCodes rong).
+  const [lastVisitRes, khachMasterRes, congViecRes] = await Promise.all([
+    supabase.rpc("get_kpi_last_visit", { p_focus_ma_khach: focusCustomerCodes }),
+    kpiMaKhachList.length > 0
+      ? supabase
+          .from("khach_hang_master")
+          .select("ma_khach,ten_khach")
+          .in("ma_khach", kpiMaKhachList)
+      : Promise.resolve({ data: null, error: null }),
+    scopedNvCodes.length > 0
+      ? supabase.rpc("get_cong_viec_tuan_summary", {
+          p_ma_nv_list: scopedNvCodes,
+          p_thang_bat_dau: dauThang,
+          p_thang_ket_thuc: dauThangSau,
+          p_top_khan: 8,
+        })
+      : Promise.resolve({ data: null, error: null }),
+  ]);
 
   const lastVisitByKey = new Map<string, string>();
-  for (const r of (lastVisitData ?? []) as LastVisitRow[]) {
+  for (const r of (lastVisitRes.data ?? []) as LastVisitRow[]) {
     lastVisitByKey.set(`${r.code}|${r.ma_khach}`, r.last_checkin);
+  }
+
+  const tenKhachByMa = new Map<string, string>();
+  for (const k of (khachMasterRes.data ?? []) as { ma_khach: string; ten_khach: string | null }[]) {
+    if (k.ten_khach) tenKhachByMa.set(k.ma_khach, k.ten_khach);
   }
 
   const phanLoaiByCode = new Map<string, PhanLoaiRow[]>();
@@ -433,26 +503,6 @@ export default async function KpiPage({
         (CANH_BAO_ORDER[a.muc_do_canh_bao ?? ""] ?? 9) -
         (CANH_BAO_ORDER[b.muc_do_canh_bao ?? ""] ?? 9),
     );
-  }
-
-  const kpiRows = (kpiRes.data ?? []) as KpiRow[];
-  const employees = (empRes.data ?? []) as EmployeeRow[];
-
-  // "Chi tieu KPIs" chi co ma_khach, khong co ten_khach - tra rieng tu
-  // khach_hang_master de hien cap Ten (Ma) trong bang chi tieu, thay vi chi
-  // hien mot chuoi ma kho tra cuu.
-  const kpiMaKhachList = Array.from(
-    new Set(kpiRows.map((k) => (k["Mã khách"] ?? "").trim()).filter(Boolean)),
-  );
-  const tenKhachByMa = new Map<string, string>();
-  if (kpiMaKhachList.length > 0) {
-    const { data: khachMasterData } = await supabase
-      .from("khach_hang_master")
-      .select("ma_khach,ten_khach")
-      .in("ma_khach", kpiMaKhachList);
-    for (const k of (khachMasterData ?? []) as { ma_khach: string; ten_khach: string | null }[]) {
-      if (k.ten_khach) tenKhachByMa.set(k.ma_khach, k.ten_khach);
-    }
   }
 
   const error = kpiRes.error ?? empRes.error ?? marketActivityRes.error ?? phanLoaiRes.error;
@@ -480,39 +530,6 @@ export default async function KpiPage({
     );
   }
 
-  const ssList = Array.from(new Set(employees.map((e) => e.SS).filter((v): v is string => !!v))).sort(
-    (a, b) => a.localeCompare(b),
-  );
-  let scopedEmployees = selectedSs ? employees.filter((e) => e.SS === selectedSs) : employees;
-  const employeeOptions = scopedEmployees
-    .map((e) => ({ code: normCode(e["Mã nhân viên"]), name: e["Tên nhân viên"] ?? e["Mã nhân viên"] }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  if (selectedNv) {
-    scopedEmployees = scopedEmployees.filter((e) => normCode(e["Mã nhân viên"]) === selectedNv);
-  }
-
-  // Tom tat "ke_hoach_cong_viec_tuan" (bang cua "Đề xuất AI") cho dung tap NV
-  // dang xem trong thang nay - RPC gop san server-side (xem
-  // get_cong_viec_tuan_summary), khong tai tho vi bang goc rat lon (co NV
-  // toi vai tram dong/thang).
-  // QUAN TRONG: phai truyen ma NGUYEN GOC (KHONG qua normCode) - cot
-  // ma_nhan_vien trong ke_hoach_cong_viec_tuan giu nguyen so 0 dau giong
-  // "Danh sach nhan vien" (vd "018670"), RPC so khop CHINH XAC (=any(...)),
-  // truyen ma da strip so 0 (vd "18670") se khong khop dong nao va tra ve
-  // rong - day chinh la loi khien khoi nay khong hien cho bat ky NV nao sau
-  // khi deploy lan dau, da xac nhan qua du lieu thuc te.
-  const scopedNvCodes = Array.from(
-    new Set(scopedEmployees.map((e) => e["Mã nhân viên"]).filter(Boolean)),
-  );
-  const congViecRes =
-    scopedNvCodes.length > 0
-      ? await supabase.rpc("get_cong_viec_tuan_summary", {
-          p_ma_nv_list: scopedNvCodes,
-          p_thang_bat_dau: dauThang,
-          p_thang_ket_thuc: dauThangSau,
-          p_top_khan: 8,
-        })
-      : { data: null, error: null };
   const congViecByCode = new Map<string, CongViecTuanSummary>();
   for (const [ma, v] of Object.entries(
     (congViecRes.data ?? {}) as Record<string, CongViecTuanSummary>,
