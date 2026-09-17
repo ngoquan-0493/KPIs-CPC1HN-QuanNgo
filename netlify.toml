@@ -5,6 +5,10 @@
 [build.environment]
   NODE_VERSION = "20"
 
+[functions]
+  # Function tu viet (keep-warm) nam canh function tu dong cua Next.js plugin
+  directory = "netlify/functions"
+
 # Ghim phien ban @netlify/plugin-nextjs ve 5.15.12 (thay vi de Netlify tu
 # dong lay ban moi nhat) vi ban 5.15.13 co bug bundling function bi thieu
 # file "handlers/request-context.cjs", khien function server crash sau khi
