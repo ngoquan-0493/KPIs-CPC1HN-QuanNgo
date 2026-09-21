@@ -1,12 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
-import { getCurrentEmployee } from "@/lib/current-employee";
 import MonthSelector from "@/components/month-selector";
 import SsFilter from "@/components/ss-filter";
 import { formatVnd } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Card, PageHeader, EmptyState, Badge, StatCard, SectionHeading } from "@/components/ui";
 import { IconWallet, IconTarget, IconClock } from "@/components/icons";
-import { LuongCungInput, LoaiHopDongSelect } from "@/components/luong-thuong-editable";
 
 // Ket qua tra ve tu RPC fn_luong_thuong_thang(p_thang) (Postgres function,
 // SECURITY INVOKER) - xem migration "add_luong_thuong_module". Ham nay tu
@@ -55,10 +53,6 @@ export default async function LuongThuongPage({
   searchParams: Promise<{ thang?: string; ss?: string }>;
 }) {
   const sp = await searchParams;
-  const currentEmployee = await getCurrentEmployee();
-  const viTriHienTai = currentEmployee?.["Vị trí"];
-  const laAsm = viTriHienTai === "ASM";
-
   const supabase = await createClient();
 
   // Danh sach thang de chon: hop nhat cac thang da co chi tieu KPI (Chi tieu
@@ -116,7 +110,7 @@ export default async function LuongThuongPage({
             {months.length > 0 && selectedMonth && (
               <MonthSelector months={months} selected={selectedMonth} />
             )}
-            {laAsm && ssList.length > 0 && <SsFilter ssList={ssList} />}
+            {ssList.length > 0 && <SsFilter ssList={ssList} />}
           </>
         }
       />
@@ -200,24 +194,14 @@ export default async function LuongThuongPage({
                         </p>
                       </td>
                       <td className="px-4 py-3">
-                        {laAsm ? (
-                          <LoaiHopDongSelect
-                            maNhanVien={r.ma_nhan_vien}
-                            giaTriBanDau={r.loai_hop_dong}
-                          />
-                        ) : r.loai_hop_dong === "Thử việc" ? (
+                        {r.loai_hop_dong === "Thử việc" ? (
                           <Badge tone="warning">Thử việc</Badge>
                         ) : (
                           <span className="text-xs text-slate-500">Chính thức</span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {laAsm ? (
-                          <LuongCungInput
-                            maNhanVien={r.ma_nhan_vien}
-                            giaTriBanDau={r.luong_cung}
-                          />
-                        ) : r.luong_cung != null ? (
+                        {r.luong_cung != null ? (
                           formatVnd(r.luong_cung)
                         ) : (
                           <span className="text-xs text-slate-400">Chưa nhập</span>
@@ -263,7 +247,7 @@ export default async function LuongThuongPage({
 
           <SectionHeading
             title=""
-            description="Điều kiện xét thưởng KPIs: tỷ lệ đạt ≥ 85% và không có chỉ tiêu nào đạt dưới 50%. Nhân viên/SS thử việc vẫn được xét thưởng nếu đạt điều kiện trên. Mức thưởng doanh số sẽ được bổ sung ở bản cập nhật sau."
+            description="Lương cứng / Loại hợp đồng lấy từ Google Sheet \"Danh sách nhân viên - Quản lý\" (đồng bộ qua workflow n8n) - sửa trực tiếp trong Sheet, không sửa trên trang này. Điều kiện xét thưởng KPIs: tỷ lệ đạt ≥ 85% và không có chỉ tiêu nào đạt dưới 50%. Nhân viên/SS thử việc vẫn được xét thưởng nếu đạt điều kiện trên. Mức thưởng doanh số sẽ được bổ sung ở bản cập nhật sau."
           />
         </>
       )}
