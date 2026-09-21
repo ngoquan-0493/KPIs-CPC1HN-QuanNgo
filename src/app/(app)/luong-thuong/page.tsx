@@ -247,7 +247,7 @@ export default async function LuongThuongPage({
 
           <SectionHeading
             title=""
-            description="Lương cứng / Loại hợp đồng lấy từ Google Sheet \"Danh sách nhân viên - Quản lý\" (đồng bộ qua workflow n8n) - sửa trực tiếp trong Sheet, không sửa trên trang này. Điều kiện xét thưởng KPIs: tỷ lệ đạt ≥ 85% và không có chỉ tiêu nào đạt dưới 50%. Nhân viên/SS thử việc vẫn được xét thưởng nếu đạt điều kiện trên. Mức thưởng doanh số sẽ được bổ sung ở bản cập nhật sau."
+            description="Lương cứng / Loại hợp đồng lấy từ Google Sheet “Danh sách nhân viên - Quản lý” (đồng bộ qua workflow n8n) - sửa trực tiếp trong Sheet, không sửa trên trang này. Điều kiện xét thưởng KPIs: tỷ lệ đạt ≥ 85% và không có chỉ tiêu nào đạt dưới 50%. Nhân viên/SS thử việc vẫn được xét thưởng nếu đạt điều kiện trên. Mức thưởng doanh số sẽ được bổ sung ở bản cập nhật sau."
           />
         </>
       )}
