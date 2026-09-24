@@ -84,6 +84,45 @@ type ThauDashboard = {
   top_san_pham: ThauSanPhamRow[];
 };
 
+// ===========================================================================
+// HO SO MOI THAU - hang doi TBMT tu phat hien qua email hang ngay (khac
+// nguon voi thau_hop_dong/thau_chi_tiet o tren, day la du lieu "truoc khi
+// trung thau": module tu dong doc mail "Bao dau thau ngay ...", loc theo
+// tinh phu trach, tu tra cuu muasamcong.mpi.gov.vn va doi chieu danh muc
+// thuoc dau thau (thau_danh_muc_thuoc). Xem chi tiet kien truc o project doc
+// "module-thau-tu-dong-canh-bao-23.09.md".
+// ===========================================================================
+
+type ThauQueueRow = {
+  id: number;
+  so_tbmt: string;
+  ten_goi_thau: string | null;
+  chu_dau_tu: string | null;
+  dia_diem: string | null;
+  thoi_diem_dong_thau: string | null;
+  trang_thai: "cho_xu_ly" | "da_xu_ly" | "loi" | "khong_co_du_lieu" | string;
+  san_pham_doi_chieu:
+    | (string | { ten_thuoc?: string; ten_hien_thi?: string; ten_chuan?: string })[]
+    | null;
+  ghi_chu: string | null;
+  created_at: string;
+};
+
+const QUEUE_TRANG_THAI: Record<
+  string,
+  { label: string; tone: "success" | "warning" | "danger" | "neutral" }
+> = {
+  cho_xu_ly: { label: "Chưa check", tone: "warning" },
+  da_xu_ly: { label: "Đã check", tone: "success" },
+  loi: { label: "Lỗi tra cứu", tone: "danger" },
+  khong_co_du_lieu: { label: "Không có dữ liệu", tone: "neutral" },
+};
+
+function tenSanPham(item: string | { ten_thuoc?: string; ten_hien_thi?: string; ten_chuan?: string }) {
+  if (typeof item === "string") return item;
+  return item.ten_thuoc ?? item.ten_hien_thi ?? item.ten_chuan ?? "?";
+}
+
 // Gia tri thau rat lon (hang tram ty) - hien theo ty/trieu cho de doc thay vi
 // so day du nhu cac trang doanh so.
 function formatTien(n: number) {
@@ -130,7 +169,7 @@ export default async function ThauPage({
   const viTri = employee?.["Vị trí"] ?? null;
   const coQuyenGan = viTri === "SS" || viTri === "ASM";
 
-  const [dashRes, nhanVienRes, hdRes] = await Promise.all([
+  const [dashRes, nhanVienRes, hdRes, queueRes] = await Promise.all([
     supabase.rpc("get_thau_dashboard", {
       p_mien: sp.mien ?? null,
       p_tinh: sp.tinh ?? null,
@@ -149,6 +188,15 @@ export default async function ThauPage({
     // 1.209 dong) thay vi suy ra tu ket qua da loc (neu khong bo loc se tu
     // thu hep dan va khong quay lai duoc).
     supabase.from("thau_hop_dong").select("tinh,mien").range(0, 1999),
+    // Hang doi Ho so moi thau (TBMT tu phat hien qua email) - bang rieng,
+    // khong lien quan RPC get_thau_dashboard o tren.
+    supabase
+      .from("thau_email_queue")
+      .select(
+        "id,so_tbmt,ten_goi_thau,chu_dau_tu,dia_diem,thoi_diem_dong_thau,trang_thai,san_pham_doi_chieu,ghi_chu,created_at",
+      )
+      .order("created_at", { ascending: false })
+      .limit(100),
   ]);
 
   const error = dashRes.error;
@@ -182,6 +230,12 @@ export default async function ThauPage({
   const sapHetHan = dash?.sap_het_han ?? [];
   const topHopDong = dash?.top_hop_dong ?? [];
   const topSanPham = dash?.top_san_pham ?? [];
+
+  const queueRows = (queueRes.data as ThauQueueRow[] | null) ?? [];
+  const queueError = queueRes.error;
+  const soChuaCheck = queueRows.filter((q) => q.trang_thai === "cho_xu_ly").length;
+  const soDaCheck = queueRows.filter((q) => q.trang_thai === "da_xu_ly").length;
+  const soLoiCheck = queueRows.filter((q) => q.trang_thai === "loi").length;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
@@ -277,6 +331,86 @@ export default async function ThauPage({
           </p>
         </Card>
       )}
+
+      {queueError && (
+        <Card className="mb-5 border-red-200 bg-red-50">
+          <p className="text-sm text-red-700">Lỗi tải hồ sơ mời thầu: {queueError.message}</p>
+        </Card>
+      )}
+
+      <Card className="mb-6">
+        <SectionHeading
+          title="Hồ sơ mời thầu"
+          description="Gói thầu tự phát hiện qua email hàng ngày, tự tra cứu muasamcong.mpi.gov.vn và đối chiếu danh mục thuốc đấu thầu"
+          count={queueRows.length}
+        />
+        {queueRows.length === 0 ? (
+          <EmptyState>Chưa có gói thầu nào được ghi nhận.</EmptyState>
+        ) : (
+          <>
+            <div className="mb-3 flex flex-wrap gap-2">
+              <Badge tone="warning">{soChuaCheck} chưa check</Badge>
+              <Badge tone="success">{soDaCheck} đã check</Badge>
+              {soLoiCheck > 0 && <Badge tone="danger">{soLoiCheck} lỗi tra cứu</Badge>}
+            </div>
+            <div className="-mx-2 overflow-x-auto">
+              <table className="w-full min-w-[900px] text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-xs font-semibold text-slate-500">
+                    <th className="px-2 py-2">Số TBMT</th>
+                    <th className="px-2 py-2">Gói thầu</th>
+                    <th className="px-2 py-2">Đóng thầu</th>
+                    <th className="px-2 py-2">Trạng thái</th>
+                    <th className="px-2 py-2">Sản phẩm khớp</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueRows.map((q) => {
+                    const tt = QUEUE_TRANG_THAI[q.trang_thai] ?? {
+                      label: q.trang_thai,
+                      tone: "neutral" as const,
+                    };
+                    const sanPham = Array.isArray(q.san_pham_doi_chieu) ? q.san_pham_doi_chieu : [];
+                    return (
+                      <tr key={q.id} className="border-b border-slate-100 last:border-0 align-top">
+                        <td className="px-2 py-2 font-mono text-xs text-slate-600">{q.so_tbmt}</td>
+                        <td className="px-2 py-2">
+                          <p className="font-medium text-slate-800">{q.ten_goi_thau ?? "—"}</p>
+                          <p className="text-xs text-slate-400">
+                            {q.chu_dau_tu ?? "—"} · {q.dia_diem ?? "—"}
+                          </p>
+                        </td>
+                        <td className="px-2 py-2 text-xs text-slate-600">
+                          {q.thoi_diem_dong_thau ?? "—"}
+                        </td>
+                        <td className="px-2 py-2">
+                          <Badge tone={tt.tone}>{tt.label}</Badge>
+                          {q.trang_thai === "loi" && q.ghi_chu && (
+                            <p className="mt-1 max-w-[220px] text-[11px] text-red-500">{q.ghi_chu}</p>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          {sanPham.length === 0 ? (
+                            <span className="text-xs text-slate-400">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {sanPham.map((sp, i) => (
+                                <Badge key={i} tone="brand">
+                                  {tenSanPham(sp)}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </Card>
 
       <Card className="mb-6">
         <SectionHeading
