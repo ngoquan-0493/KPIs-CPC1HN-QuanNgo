@@ -225,19 +225,38 @@ export async function taoDongKpiNhap(input: KpiDraftInput) {
   // Voi "Duy trì SPTT"/"Duy trì": diem_kpis_ke_hoach LA GIA TRI TONG CHO CA
   // NHOM (khong phai rieng dong nay) - luon dong bo ngay sau khi them dong,
   // cung voi nguong hoan thanh nhom neu co nhap.
-  const cauHinh = layCauHinhChiTieu(input.chiTieu);
-  if (cauHinh?.canNguongNhom) {
-    await apDungGiaTriNhom(
-      supabase,
-      target,
-      input.chiTieu,
-      input.thangDanhGia,
-      { nguong: input.nguongNhom, diemKeHoach: input.diemKpisKeHoach },
-      true, // NVKD (khong phai SS/ASM) - bo qua dong da "da_duyet" trong nhom
-    );
+  // Tu day tro di, dong da duoc luu THANH CONG vao Supabase. Moi buoc phia
+  // sau (dong bo gia tri nhom, revalidatePath) chi la "best effort" - KHONG
+  // duoc de loi o day lam that bai ca action va khien UI hien loi chung
+  // chung "Server Components render" trong khi dong chinh da luu dung (bug
+  // xac nhan 24/9/2026: NVKD them dong "Mo moi SPTT" bi bao loi nay dù dong
+  // van luu thanh cong; khong tai hien duoc khi thao tac bang tai khoan
+  // SS/ASM - nghi ngo lien quan revalidatePath() ep render lai TOAN BO trang
+  // /kpi ngay trong action, rieng voi phien NVKD - nhung KpiXayDung da tu
+  // goi lai layDanhSachKpiTheoThang() qua taiLai() sau khi action tra ve nen
+  // khong can revalidatePath o day de cap nhat UI). Neu that bai, chi log,
+  // khong throw.
+  try {
+    const cauHinh = layCauHinhChiTieu(input.chiTieu);
+    if (cauHinh?.canNguongNhom) {
+      await apDungGiaTriNhom(
+        supabase,
+        target,
+        input.chiTieu,
+        input.thangDanhGia,
+        { nguong: input.nguongNhom, diemKeHoach: input.diemKpisKeHoach },
+        true, // NVKD (khong phai SS/ASM) - bo qua dong da "da_duyet" trong nhom
+      );
+    }
+  } catch (e) {
+    console.error("taoDongKpiNhap: dong bo gia tri nhom that bai (dong chinh van da luu):", e);
   }
 
-  revalidatePath("/kpi");
+  try {
+    revalidatePath("/kpi");
+  } catch (e) {
+    console.error("taoDongKpiNhap: revalidatePath('/kpi') that bai (dong chinh van da luu):", e);
+  }
 }
 
 // Sua 1 dong dang "nhap"/"tu_choi" cua chinh minh (hoac cua NV duoi quyen
@@ -251,19 +270,30 @@ export async function capNhatDongKpiNhap(id: string, input: KpiDraftInput) {
   const { error } = await supabase.from("Chi tieu KPIs").update(row).eq("id", id);
   if (error) throw new Error(error.message);
 
-  const cauHinh = layCauHinhChiTieu(input.chiTieu);
-  if (cauHinh?.canNguongNhom) {
-    await apDungGiaTriNhom(
-      supabase,
-      target,
-      input.chiTieu,
-      input.thangDanhGia,
-      { nguong: input.nguongNhom, diemKeHoach: input.diemKpisKeHoach },
-      true, // NVKD (khong phai SS/ASM) - bo qua dong da "da_duyet" trong nhom
-    );
+  // Xem ghi chu chi tiet o taoDongKpiNhap() ben tren - cung ly do, cung cach
+  // xu ly: dong chinh da UPDATE thanh cong roi, khong de buoc dong bo
+  // nhom/revalidate phia sau lam that bai ca action.
+  try {
+    const cauHinh = layCauHinhChiTieu(input.chiTieu);
+    if (cauHinh?.canNguongNhom) {
+      await apDungGiaTriNhom(
+        supabase,
+        target,
+        input.chiTieu,
+        input.thangDanhGia,
+        { nguong: input.nguongNhom, diemKeHoach: input.diemKpisKeHoach },
+        true, // NVKD (khong phai SS/ASM) - bo qua dong da "da_duyet" trong nhom
+      );
+    }
+  } catch (e) {
+    console.error("capNhatDongKpiNhap: dong bo gia tri nhom that bai (dong chinh van da luu):", e);
   }
 
-  revalidatePath("/kpi");
+  try {
+    revalidatePath("/kpi");
+  } catch (e) {
+    console.error("capNhatDongKpiNhap: revalidatePath('/kpi') that bai (dong chinh van da luu):", e);
+  }
 }
 
 // Xoa 1 dong con "nhap" (RLS "scoped delete draft" chi cho xoa dong nhap).
@@ -329,7 +359,11 @@ export async function datNguongNhom(
   const supabase = await createClient();
   await apDungGiaTriNhom(supabase, target, chiTieu, thangDanhGia, { nguong }, true);
 
-  revalidatePath("/kpi");
+  try {
+    revalidatePath("/kpi");
+  } catch (e) {
+    console.error("datNguongNhom: revalidatePath('/kpi') that bai (gia tri nhom van da luu):", e);
+  }
 }
 
 // SS/ASM dat nguong nhom truc tiep tu man hinh phe duyet (khong bi rang buoc
@@ -367,7 +401,11 @@ export async function datDiemKeHoachNhom(
   const supabase = await createClient();
   await apDungGiaTriNhom(supabase, target, chiTieu, thangDanhGia, { diemKeHoach }, true);
 
-  revalidatePath("/kpi");
+  try {
+    revalidatePath("/kpi");
+  } catch (e) {
+    console.error("datDiemKeHoachNhom: revalidatePath('/kpi') that bai (gia tri nhom van da luu):", e);
+  }
 }
 
 export async function datDiemKeHoachNhomChoDuyet(
