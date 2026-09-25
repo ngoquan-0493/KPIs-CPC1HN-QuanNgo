@@ -32,6 +32,13 @@ async function xacDinhNguoiThucHien(maNhanVienMucTieu?: string) {
 // Dua 1 cap khach-san pham can theo doi vao ke hoach tuan hien tai - hoac NV
 // tu tick cho chinh minh, hoac SS/ASM tick thay cho 1 NV duoi quyen ("giao
 // viec" - khong can NV xac nhan lai, vao ke hoach ngay theo yeu cau).
+// Bug xac nhan 25/9/2026: Next.js AN HET noi dung that cua bat ky loi nao
+// bi THROW tu trong Server Action khi chay production (chi con lai thong bao
+// chung chung "An error occurred..."), du client co try/catch hay khong. Vi
+// vay tu day ham nay TRA VE { error } cho nhung loi da luong truoc duoc (vd
+// upsert bi RLS chan vi giao cho 1 ma NV da nghi viec/khong con thuoc quyen
+// quan ly - xem visible_employee_codes()) thay vi throw, de UI hien duoc
+// thong bao huu ich thay vi loi do chung chung.
 export async function dinhVaoKeHoachTuan(input: {
   maKhach: string;
   tenKhach: string | null;
@@ -40,50 +47,92 @@ export async function dinhVaoKeHoachTuan(input: {
   mucDoCanhBao: MucDoCanhBao;
   thangDanhGia: string | null;
   maNhanVienMucTieu?: string;
-}) {
-  const { target, giaoBoi } = await xacDinhNguoiThucHien(input.maNhanVienMucTieu);
+}): Promise<{ error?: string }> {
+  try {
+    const { target, giaoBoi } = await xacDinhNguoiThucHien(input.maNhanVienMucTieu);
 
-  const { start, end } = weekBoundsTheoDoi();
-  const supabase = await createClient();
+    const { start, end } = weekBoundsTheoDoi();
+    const supabase = await createClient();
 
-  const { error } = await supabase.from("khach_hang_theo_doi_ke_hoach").upsert(
-    {
-      ma_nhan_vien: target,
-      ma_khach: input.maKhach,
-      ten_khach: input.tenKhach,
-      ma_san_pham: input.maSanPham,
-      ten_san_pham: input.tenSanPham,
-      muc_do_canh_bao: input.mucDoCanhBao,
-      thang_danh_gia: input.thangDanhGia,
-      tuan_bat_dau: start,
-      tuan_ket_thuc: end,
-      trang_thai: "da_len_ke_hoach",
-      giao_boi: giaoBoi,
-    },
-    { onConflict: "ma_khach,ma_san_pham,tuan_bat_dau" },
-  );
-  if (error) throw new Error(error.message);
+    const { error } = await supabase.from("khach_hang_theo_doi_ke_hoach").upsert(
+      {
+        ma_nhan_vien: target,
+        ma_khach: input.maKhach,
+        ten_khach: input.tenKhach,
+        ma_san_pham: input.maSanPham,
+        ten_san_pham: input.tenSanPham,
+        muc_do_canh_bao: input.mucDoCanhBao,
+        thang_danh_gia: input.thangDanhGia,
+        tuan_bat_dau: start,
+        tuan_ket_thuc: end,
+        trang_thai: "da_len_ke_hoach",
+        giao_boi: giaoBoi,
+      },
+      { onConflict: "ma_khach,ma_san_pham,tuan_bat_dau" },
+    );
+    if (error) {
+      console.error("dinhVaoKeHoachTuan loi upsert:", error);
+      if (error.code === "42501") {
+        return {
+          error:
+            "Không thể giao cho nhân viên này — có thể nhân viên đã nghỉ việc hoặc không còn thuộc quyền quản lý của bạn. Vui lòng chọn nhân viên khác.",
+        };
+      }
+      return { error: "Có lỗi khi lưu kế hoạch tuần. Vui lòng thử lại." };
+    }
+  } catch (e) {
+    console.error("dinhVaoKeHoachTuan loi khong luong truoc:", e);
+    return { error: e instanceof Error ? e.message : "Có lỗi xảy ra. Vui lòng thử lại." };
+  }
 
-  revalidatePath("/customers");
+  // revalidatePath la buoc phu (UI tab nay dua vao router refresh ngam dinh
+  // cua Next sau khi Server Action hoan tat) - de rieng ngoai try/catch chinh
+  // o tren de loi o day (neu co) khong lam mat di viec da luu thanh cong.
+  try {
+    revalidatePath("/customers");
+  } catch (e) {
+    console.error("dinhVaoKeHoachTuan loi revalidatePath (khong anh huong du lieu da luu):", e);
+  }
+
+  return {};
 }
 
 // Bo 1 dong da tick ra khoi ke hoach tuan (NV doi y/tick nham, hoac SS/ASM bo
 // mot viec da giao). maSanPham luon la string (co the rong "") - khong dung
 // null de tranh vuong mac voi .eq() tren cot nullable.
-export async function boKhoiKeHoachTuan(maKhach: string, maSanPham: string, maNhanVienMucTieu?: string) {
-  const { target } = await xacDinhNguoiThucHien(maNhanVienMucTieu);
+// Cung ly do nhu dinhVaoKeHoachTuan o tren - tra ve { error } thay vi throw.
+export async function boKhoiKeHoachTuan(
+  maKhach: string,
+  maSanPham: string,
+  maNhanVienMucTieu?: string,
+): Promise<{ error?: string }> {
+  try {
+    const { target } = await xacDinhNguoiThucHien(maNhanVienMucTieu);
 
-  const { start } = weekBoundsTheoDoi();
-  const supabase = await createClient();
+    const { start } = weekBoundsTheoDoi();
+    const supabase = await createClient();
 
-  const { error } = await supabase
-    .from("khach_hang_theo_doi_ke_hoach")
-    .delete()
-    .eq("ma_nhan_vien", target)
-    .eq("ma_khach", maKhach)
-    .eq("tuan_bat_dau", start)
-    .eq("ma_san_pham", maSanPham);
-  if (error) throw new Error(error.message);
+    const { error } = await supabase
+      .from("khach_hang_theo_doi_ke_hoach")
+      .delete()
+      .eq("ma_nhan_vien", target)
+      .eq("ma_khach", maKhach)
+      .eq("tuan_bat_dau", start)
+      .eq("ma_san_pham", maSanPham);
+    if (error) {
+      console.error("boKhoiKeHoachTuan loi delete:", error);
+      return { error: "Có lỗi khi bỏ kế hoạch tuần. Vui lòng thử lại." };
+    }
+  } catch (e) {
+    console.error("boKhoiKeHoachTuan loi khong luong truoc:", e);
+    return { error: e instanceof Error ? e.message : "Có lỗi xảy ra. Vui lòng thử lại." };
+  }
 
-  revalidatePath("/customers");
+  try {
+    revalidatePath("/customers");
+  } catch (e) {
+    console.error("boKhoiKeHoachTuan loi revalidatePath (khong anh huong du lieu da xoa):", e);
+  }
+
+  return {};
 }

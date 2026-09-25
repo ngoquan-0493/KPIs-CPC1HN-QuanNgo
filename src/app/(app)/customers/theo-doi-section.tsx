@@ -435,6 +435,17 @@ export default async function TheoDoiSection({
                 // dong/nvTheoSs) - de SS/ASM van thay ro dang giao lai TU AI,
                 // khong bi mat lua chon "giu nguyen nguoi cu" neu ho van con.
                 const coNvGoc = dongNghiepCungSs.some((nv) => normCode(nv.code) === normCode(item.maNhanVien));
+                // Bug xac nhan 25/9/2026: truoc day NV goc da nghi viec van
+                // duoc GIU NGUYEN nhu 1 lua chon binh thuong trong dropdown (va
+                // con duoc CHON SAN mac dinh) - nhung visible_employee_codes()
+                // (dung trong RLS cua khach_hang_theo_doi_ke_hoach) chi tra ve
+                // nhung ma NV CON TON TAI trong "Danh sach nhan vien", nen giao
+                // lai cho ho LUON BI RLS CHAN, va Next.js an het noi dung loi
+                // that trong production khien nguoi dung chi thay loi do chung
+                // chung ("Giao" hien do). Nay danh dau rieng entry nay bang
+                // khaDung: false de dropdown VAN HIEN THI (biet dang giao lai TU
+                // AI) nhung KHONG CHO CHON, va khong con duoc chon san mac dinh
+                // (xem TheoDoiToggle).
                 const danhSachNvCungSs = coNvGoc
                   ? dongNghiepCungSs
                   : [
@@ -443,6 +454,7 @@ export default async function TheoDoiSection({
                         name: item.tenNhanVien
                           ? `${item.tenNhanVien} (có thể đã nghỉ việc)`
                           : item.maNhanVien,
+                        khaDung: false,
                       },
                       ...dongNghiepCungSs,
                     ];

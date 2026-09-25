@@ -46,7 +46,10 @@ export default function TheoDoiToggle({
   nvDaGiao: string;
   tenNvDaGiao: string | null;
   // Danh sach NV co the chon de giao (cung nhom SS voi NV goc phu trach).
-  danhSachNv: { code: string; name: string }[];
+  // khaDung === false: chi de HIEN THI thong tin (vd NV goc da nghi viec),
+  // KHONG cho chon - se luon bi RLS chan neu co giao. Mac dinh (undefined)
+  // la co the chon binh thuong. Bug xac nhan 25/9/2026.
+  danhSachNv: { code: string; name: string; khaDung?: boolean }[];
   daLenKeHoach: boolean;
   daViengTham: boolean;
   giaoBoi: string | null;
@@ -57,7 +60,7 @@ export default function TheoDoiToggle({
   const [checked, setChecked] = useState(daLenKeHoach);
   const [assignedTo, setAssignedTo] = useState(nvDaGiao);
   const [selectedNv, setSelectedNv] = useState(
-    danhSachNv.some((nv) => nv.code === nvDaGiao) ? nvDaGiao : "",
+    danhSachNv.some((nv) => nv.code === nvDaGiao && nv.khaDung !== false) ? nvDaGiao : "",
   );
   const [dangSuaNv, setDangSuaNv] = useState(false);
 
@@ -68,18 +71,23 @@ export default function TheoDoiToggle({
     setChecked(next);
     startTransition(async () => {
       try {
-        if (next) {
-          await dinhVaoKeHoachTuan({
-            maKhach,
-            tenKhach,
-            maSanPham,
-            tenSanPham,
-            mucDoCanhBao,
-            thangDanhGia,
-            maNhanVienMucTieu,
-          });
-        } else {
-          await boKhoiKeHoachTuan(maKhach, maSanPham, maNhanVienMucTieu);
+        const res = next
+          ? await dinhVaoKeHoachTuan({
+              maKhach,
+              tenKhach,
+              maSanPham,
+              tenSanPham,
+              mucDoCanhBao,
+              thangDanhGia,
+              maNhanVienMucTieu,
+            })
+          : await boKhoiKeHoachTuan(maKhach, maSanPham, maNhanVienMucTieu);
+        // Bug xac nhan 25/9/2026: action gio TRA VE { error } thay vi throw
+        // cho cac loi da luong truoc duoc (vd RLS chan) - vi Next.js an het
+        // noi dung cua moi loi bi THROW tu Server Action trong production.
+        if (res?.error) {
+          setChecked(!next);
+          setError(res.error);
         }
       } catch (e) {
         setChecked(!next);
@@ -95,7 +103,7 @@ export default function TheoDoiToggle({
     setError(null);
     startTransition(async () => {
       try {
-        await dinhVaoKeHoachTuan({
+        const res = await dinhVaoKeHoachTuan({
           maKhach,
           tenKhach,
           maSanPham,
@@ -104,6 +112,10 @@ export default function TheoDoiToggle({
           thangDanhGia,
           maNhanVienMucTieu: nvCode,
         });
+        if (res?.error) {
+          setError(res.error);
+          return;
+        }
         setChecked(true);
         setAssignedTo(nvCode);
         setDangSuaNv(false);
@@ -117,7 +129,11 @@ export default function TheoDoiToggle({
     setError(null);
     startTransition(async () => {
       try {
-        await boKhoiKeHoachTuan(maKhach, maSanPham, assignedTo);
+        const res = await boKhoiKeHoachTuan(maKhach, maSanPham, assignedTo);
+        if (res?.error) {
+          setError(res.error);
+          return;
+        }
         setChecked(false);
         setDangSuaNv(false);
       } catch (e) {
@@ -156,7 +172,7 @@ export default function TheoDoiToggle({
             >
               <option value="">Chọn NV để giao...</option>
               {danhSachNv.map((nv) => (
-                <option key={nv.code} value={nv.code}>
+                <option key={nv.code} value={nv.code} disabled={nv.khaDung === false}>
                   {ghepTenMa(nv.name, nv.code)}
                 </option>
               ))}
@@ -191,7 +207,9 @@ export default function TheoDoiToggle({
         <div className="mt-0.5 flex items-center justify-end gap-2">
           <button
             onClick={() => {
-              setSelectedNv(danhSachNv.some((nv) => nv.code === assignedTo) ? assignedTo : "");
+              setSelectedNv(
+                danhSachNv.some((nv) => nv.code === assignedTo && nv.khaDung !== false) ? assignedTo : "",
+              );
               setDangSuaNv(true);
             }}
             disabled={pending}
