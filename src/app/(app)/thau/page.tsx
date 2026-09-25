@@ -93,6 +93,25 @@ type ThauDashboard = {
 // "module-thau-tu-dong-canh-bao-23.09.md".
 // ===========================================================================
 
+// Tu 25/9: scheduled task tra cuu ghi ca chi tiet hoat chat (khong chi ten san
+// pham) - lay theo dung cac cot co trong Bang pham vi cung cap/Phu luc cua Ho
+// so moi thau, khi khong doc duoc thi fallback ve danh muc thuoc dau thau cua
+// Quan. Van giu tuong thich nguoc voi du lieu cu (string, hoac object chi co
+// ten_hien_thi/ten_chuan tu truoc 25/9).
+type ThauSanPhamChiTiet = {
+  ten_thuoc?: string;
+  ten_hien_thi?: string;
+  ten_chuan?: string;
+  ten_hoat_chat?: string | null;
+  nong_do_ham_luong?: string | null;
+  duong_dung?: string | null;
+  dang_bao_che?: string | null;
+  don_vi_tinh?: string | null;
+  so_luong?: string | number | null;
+  gia_ke_hoach?: string | number | null;
+  nhom_thuoc?: string | null;
+};
+
 type ThauQueueRow = {
   id: number;
   so_tbmt: string;
@@ -101,9 +120,7 @@ type ThauQueueRow = {
   dia_diem: string | null;
   thoi_diem_dong_thau: string | null;
   trang_thai: "cho_xu_ly" | "da_xu_ly" | "loi" | "khong_co_du_lieu" | string;
-  san_pham_doi_chieu:
-    | (string | { ten_thuoc?: string; ten_hien_thi?: string; ten_chuan?: string })[]
-    | null;
+  san_pham_doi_chieu: (string | ThauSanPhamChiTiet)[] | null;
   ghi_chu: string | null;
   created_at: string;
 };
@@ -118,9 +135,34 @@ const QUEUE_TRANG_THAI: Record<
   khong_co_du_lieu: { label: "Không có dữ liệu", tone: "neutral" },
 };
 
-function tenSanPham(item: string | { ten_thuoc?: string; ten_hien_thi?: string; ten_chuan?: string }) {
+function tenSanPham(item: string | ThauSanPhamChiTiet) {
   if (typeof item === "string") return item;
   return item.ten_thuoc ?? item.ten_hien_thi ?? item.ten_chuan ?? "?";
+}
+
+// Cac cot chi tiet theo dung Bang pham vi cung cap/Phu luc trong Ho so moi
+// thau: Ten hoat chat - Nong do/ham luong - Duong dung - Dang bao che - Don
+// vi tinh - So luong - Gia ke hoach - Nhom thuoc. Bo qua truong nao rong (vd
+// gia ke hoach thuong khong cong khai) thay vi hien "—" day ca hang.
+function chiTietSanPham(item: string | ThauSanPhamChiTiet): { nhan: string; gia: string }[] {
+  if (typeof item === "string") return [];
+  const rows: { nhan: string; gia: string }[] = [];
+  if (item.ten_hoat_chat) rows.push({ nhan: "Hoạt chất", gia: item.ten_hoat_chat });
+  if (item.nong_do_ham_luong) rows.push({ nhan: "Nồng độ/hàm lượng", gia: item.nong_do_ham_luong });
+  if (item.duong_dung) rows.push({ nhan: "Đường dùng", gia: item.duong_dung });
+  if (item.dang_bao_che) rows.push({ nhan: "Dạng bào chế", gia: item.dang_bao_che });
+  if (item.don_vi_tinh) rows.push({ nhan: "Đơn vị tính", gia: item.don_vi_tinh });
+  if (item.so_luong !== null && item.so_luong !== undefined && item.so_luong !== "")
+    rows.push({ nhan: "Số lượng", gia: String(item.so_luong) });
+  if (item.gia_ke_hoach !== null && item.gia_ke_hoach !== undefined && item.gia_ke_hoach !== "")
+    rows.push({ nhan: "Giá kế hoạch", gia: formatGia(item.gia_ke_hoach) });
+  if (item.nhom_thuoc) rows.push({ nhan: "Nhóm thuốc", gia: item.nhom_thuoc });
+  return rows;
+}
+
+function formatGia(v: string | number) {
+  if (typeof v === "number") return v.toLocaleString("vi-VN") + " đ";
+  return v;
 }
 
 // Gia tri thau rat lon (hang tram ty) - hien theo ty/trieu cho de doc thay vi
@@ -354,14 +396,14 @@ export default async function ThauPage({
               {soLoiCheck > 0 && <Badge tone="danger">{soLoiCheck} lỗi tra cứu</Badge>}
             </div>
             <div className="-mx-2 overflow-x-auto">
-              <table className="w-full min-w-[900px] text-sm">
+              <table className="w-full min-w-[1080px] text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs font-semibold text-slate-500">
                     <th className="px-2 py-2">Số TBMT</th>
                     <th className="px-2 py-2">Gói thầu</th>
                     <th className="px-2 py-2">Đóng thầu</th>
                     <th className="px-2 py-2">Trạng thái</th>
-                    <th className="px-2 py-2">Sản phẩm khớp</th>
+                    <th className="px-2 py-2 w-[380px]">Sản phẩm khớp</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -393,12 +435,28 @@ export default async function ThauPage({
                           {sanPham.length === 0 ? (
                             <span className="text-xs text-slate-400">—</span>
                           ) : (
-                            <div className="flex flex-wrap gap-1">
-                              {sanPham.map((sp, i) => (
-                                <Badge key={i} tone="brand">
-                                  {tenSanPham(sp)}
-                                </Badge>
-                              ))}
+                            <div className="flex flex-col gap-1.5">
+                              {sanPham.map((sp, i) => {
+                                const chiTiet = chiTietSanPham(sp);
+                                return (
+                                  <div
+                                    key={i}
+                                    className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5"
+                                  >
+                                    <Badge tone="brand">{tenSanPham(sp)}</Badge>
+                                    {chiTiet.length > 0 && (
+                                      <dl className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
+                                        {chiTiet.map((c) => (
+                                          <div key={c.nhan} className="contents">
+                                            <dt className="text-slate-400">{c.nhan}</dt>
+                                            <dd className="text-slate-700">{c.gia}</dd>
+                                          </div>
+                                        ))}
+                                      </dl>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </td>
@@ -408,6 +466,15 @@ export default async function ThauPage({
                 </tbody>
               </table>
             </div>
+            {queueRows.some(
+              (q) => Array.isArray(q.san_pham_doi_chieu) && q.san_pham_doi_chieu.some((sp) => typeof sp !== "string" && chiTietSanPham(sp).length === 0),
+            ) && (
+              <p className="mt-2 text-[11px] text-slate-400">
+                Một số sản phẩm khớp chưa có chi tiết hoạt chất/nồng độ/giá — do hồ sơ mời thầu không
+                công khai (thường ở Chương V dạng file nén không đọc được) hoặc là kết quả từ trước
+                25/9/2026, trước khi module trích xuất thêm chi tiết.
+              </p>
+            )}
           </>
         )}
       </Card>
