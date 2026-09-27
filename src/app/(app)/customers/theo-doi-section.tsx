@@ -1,51 +1,25 @@
 import { createClient } from "@/lib/supabase/server";
-import { fetchAllRows, isExcludedSaleRow } from "@/lib/sales-channel";
 import { ghepTenMa } from "@/lib/display";
 import { Badge, Card, EmptyState, SectionHeading, StatCard } from "@/components/ui";
 import { IconAlert, IconClock, IconUsers } from "@/components/icons";
 import TheoDoiToggle from "@/components/theo-doi-toggle";
 import { weekBoundsTheoDoi, type MucDoCanhBao } from "@/lib/week-bounds-theo-doi";
 
-// Chi 2 nhom KH duoc ap chi tieu lap don theo skill pharma-lap-don-target -
-// Thau/KM/Online/Miniapp la kenh tu nhien, khong tinh "can theo doi".
-const KENH_AP_DUNG = new Set(["Bv kê đơn", "Phòng mạch"]);
-
-type LapDonRow = {
-  ma_khach: string;
-  ten_khach: string | null;
-  ma_nhan_vien: string | null;
-  ten_nhan_vien: string | null;
-  ma_san_pham: string | null;
-  ten_san_pham: string | null;
-  muc_do_canh_bao: string | null;
-  thang_danh_gia: string | null;
-  don_gan_nhat: string | null;
-};
-
-type SaleRow = {
-  ma_khach: string | null;
-  ten_khach: string | null;
-  ma_hang: string | null;
-  ten_san_pham_chuan_hoa: string | null;
-  ma_nhan_vien: string | null;
-  ten_nhan_vien: string | null;
-  nhom_khach_hang: string | null;
-  doanh_thu: number | null;
-  thang: number | null;
-  nam: number | null;
-  trang_thai?: string | null;
-};
-
-type PlanRow = {
-  ma_khach: string;
-  ma_san_pham: string | null;
-  muc_do_canh_bao: string;
-  trang_thai: string;
-  giao_boi: string | null;
-  ma_nhan_vien: string;
-};
-
-type CheckinRow = { ma_khach: string | null };
+// 2026-09-27: Toan bo phan tim kiem + lam giau du lieu cua trang nay (Khan/Uu
+// tien/Mo coi tu phan_loai_khach_hang_can_lap_don, "Sap den han" tu 2 bang
+// doanh so, ke hoach tuan, da vieng tham tuan, SS phu trach) da CHUYEN VAO 1
+// RPC duy nhat get_theo_doi_dashboard (Postgres) - truoc day la 3 vong
+// round-trip TUAN TU (moi vong phai doi vong truoc xong moi biet goi gi tiep,
+// vong giua con fetchAllRows het toan bo bang lich su "Du lieu sale tong" ~
+// 86 nghin dong) khien tab "Khach hang can theo doi" bi cam giac "do lag" khi
+// chuyen tab. Xem migration "add_theo_doi_dashboard_rpc".
+//
+// Nhan tien sua 1 loi da phat hien khi gop RPC: cau query cu chon ca cot
+// trang_thai tren CA 2 bang doanh so, nhung "Du lieu sale tong" KHONG CO cot
+// nay - PostgREST tra loi ngay (khong throw, code cu cung khong kiem tra
+// error cua rieng vong nay) nen phan "Sap den han" tinh tu bang lich su gan
+// nhu LUON RONG tu truoc den nay. RPC moi dung ham SQL is_excluded_sale_row()
+// (da co san, dung chung voi get_customers_dashboard) nen khong con loi nay.
 
 export type CanhBaoItem = {
   maKhach: string;
@@ -56,6 +30,34 @@ export type CanhBaoItem = {
   tenSanPham: string | null;
   mucDo: MucDoCanhBao;
   donGanNhat: string | null;
+  // Gan them tu RPC - thay cho planByKey/daViengTuanNay/maSsPhuTrachByMaKhach
+  // (cac Map duoc build tu 3 vong fetch rieng truoc day).
+  planNv: string | null;
+  planGiaoBoi: string | null;
+  daLenKeHoach: boolean;
+  daViengTham: boolean;
+  maSsPhuTrach: string | null;
+};
+
+type RpcRow = {
+  ma_khach: string;
+  ten_khach: string | null;
+  ma_nhan_vien: string;
+  ten_nhan_vien: string | null;
+  ma_san_pham: string;
+  ten_san_pham: string | null;
+  muc_do: MucDoCanhBao;
+  don_gan_nhat: string | null;
+  plan_nv: string | null;
+  plan_giao_boi: string | null;
+  da_len_ke_hoach: boolean;
+  da_vieng_tham: boolean;
+  ma_ss_phu_trach: string | null;
+};
+
+type TheoDoiDashboard = {
+  thang_danh_gia_moi_nhat: string | null;
+  items: RpcRow[];
 };
 
 const MUC_DO_ORDER: Record<MucDoCanhBao, number> = {
@@ -72,112 +74,8 @@ const MUC_DO_TONE: Record<MucDoCanhBao, "danger" | "warning" | "info" | "neutral
   "Mồ côi": "neutral",
 };
 
-// "T7/2026" -> 202607 de so sanh/sap xep; 0 neu khong parse duoc.
-function parseThangDanhGia(s: string | null): number {
-  const m = (s ?? "").match(/T(\d+)\/(\d+)/);
-  if (!m) return 0;
-  return Number(m[2]) * 100 + Number(m[1]);
-}
-
-function thangLuiVe(nam: number, thang: number, soThangLui: number): { nam: number; thang: number } {
-  let t = thang - soThangLui;
-  let n = nam;
-  while (t <= 0) {
-    t += 12;
-    n -= 1;
-  }
-  return { nam: n, thang: t };
-}
-
-function formatThangDanhGia(nam: number, thang: number): string {
-  return `T${thang}/${nam}`;
-}
-
 function normCode(code: string | null | undefined) {
   return (code ?? "").replace(/\D/g, "").replace(/^0+/, "") || code || "";
-}
-
-// Tinh danh sach cap (khach - san pham) o muc "Sap den han": dung logic
-// CASE 1 cua skill pharma-lap-don-target khi only_month = thang lien truoc
-// (T-1) - hien tai skill dang BO QUA truong hop nay vi "qua gan, chua can chi
-// tieu", nhung day chinh la tin hieu canh bao SOM ma nguoi dung yeu cau bo
-// sung (truoc khi no thanh "Khan" vao thang sau).
-async function tinhSapDenHan(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  thangHienTai: { nam: number; thang: number },
-  daCoTrongLapDon: Set<string>,
-): Promise<CanhBaoItem[]> {
-  // Cua so 4 thang T-4..T-1 tinh tu thang danh gia (giong skill).
-  const cuaSo = [4, 3, 2, 1].map((soThangLui) => thangLuiVe(thangHienTai.nam, thangHienTai.thang, soThangLui));
-  const cols =
-    "ma_khach,ten_khach,ma_hang,ten_san_pham_chuan_hoa,ma_nhan_vien,ten_nhan_vien,nhom_khach_hang,doanh_thu,thang,nam,trang_thai";
-
-  const orDieuKien = cuaSo.map((c) => `and(nam.eq.${c.nam},thang.eq.${c.thang})`).join(",");
-
-  const [tongRes, hienTaiRes] = await Promise.all([
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase.from("Du lieu sale tong").select(cols).or(orDieuKien).range(from, to),
-    ),
-    fetchAllRows<SaleRow>((from, to) =>
-      supabase.from("Du lieu sale thang hien tai").select(cols).or(orDieuKien).range(from, to),
-    ),
-  ]);
-
-  const rows = [...tongRes.data, ...hienTaiRes.data];
-  const thangT1 = cuaSo[3]; // T-1: phan tu cuoi cung trong mang cuaSo
-
-  type Key = string;
-  const thangCoDonByKey = new Map<Key, Set<number>>();
-  const infoByKey = new Map<
-    Key,
-    { maKhach: string; tenKhach: string | null; maSp: string; tenSp: string | null; maNv: string | null; tenNv: string | null }
-  >();
-
-  for (const r of rows) {
-    if (!r.ma_khach || !r.ma_hang) continue;
-    if (!KENH_AP_DUNG.has((r.nhom_khach_hang ?? "").trim())) continue;
-    if ((r.doanh_thu ?? 0) <= 0) continue;
-    if (isExcludedSaleRow(r)) continue;
-    if (r.nam == null || r.thang == null) continue;
-
-    const key = `${r.ma_khach}|${r.ma_hang}`;
-    if (daCoTrongLapDon.has(key)) continue; // da co trong Khan/Uu tien/Mo coi roi
-
-    const thangKey = r.nam * 100 + r.thang;
-    if (!thangCoDonByKey.has(key)) thangCoDonByKey.set(key, new Set());
-    thangCoDonByKey.get(key)!.add(thangKey);
-    if (!infoByKey.has(key)) {
-      infoByKey.set(key, {
-        maKhach: r.ma_khach,
-        tenKhach: r.ten_khach,
-        maSp: r.ma_hang,
-        tenSp: r.ten_san_pham_chuan_hoa,
-        maNv: r.ma_nhan_vien,
-        tenNv: r.ten_nhan_vien,
-      });
-    }
-  }
-
-  const thangT1Key = thangT1.nam * 100 + thangT1.thang;
-  const ketQua: CanhBaoItem[] = [];
-  for (const [key, thangSet] of thangCoDonByKey) {
-    // Chi dung 1 thang duy nhat trong ca so 4 thang, va thang do dung la T-1.
-    if (thangSet.size !== 1) continue;
-    if (!thangSet.has(thangT1Key)) continue;
-    const info = infoByKey.get(key);
-    if (!info || !info.maNv) continue;
-    ketQua.push({
-      maKhach: info.maKhach,
-      tenKhach: info.tenKhach,
-      maNhanVien: info.maNv,
-      tenNhanVien: info.tenNv,
-      maSanPham: info.maSp,
-      tenSanPham: info.tenSp,
-      mucDo: "Sắp đến hạn",
-      donGanNhat: formatThangDanhGia(thangT1.nam, thangT1.thang),
-    });
-  }
-  return ketQua;
 }
 
 export default async function TheoDoiSection({
@@ -210,64 +108,45 @@ export default async function TheoDoiSection({
     nvTheoSs.get(e.ss)!.push({ code: e.code, name: e.name });
   }
   for (const list of nvTheoSs.values()) list.sort((a, b) => a.name.localeCompare(b.name));
-  // Quy doi MA SS (luu o khach_hang_master.ma_ss_phu_trach) sang TEN SS (khoa
-  // dung trong nvTheoSs o tren) - dung khi NV goc DA BI XOA HAN khoi "Danh
-  // sach nhan vien" (nghi viec) nen khong con tra duoc SS qua ssByCode nua.
   const tenSsTheoMa = new Map<string, string>();
   for (const e of ssEmployees) tenSsTheoMa.set(normCode(e.code), e.name);
+
   const supabase = await createClient();
+  const { start, end } = weekBoundsTheoDoi();
 
-  const { data: lapDonData, error: lapDonError } = await fetchAllRows<LapDonRow>((from, to) =>
-    supabase
-      .from("phan_loai_khach_hang_can_lap_don")
-      .select("ma_khach,ten_khach,ma_nhan_vien,ten_nhan_vien,ma_san_pham,ten_san_pham,muc_do_canh_bao,thang_danh_gia,don_gan_nhat")
-      .range(from, to),
-  );
+  const { data: dashData, error: dashError } = await supabase.rpc("get_theo_doi_dashboard", {
+    p_ss: selectedSs ?? null,
+    p_nv: selectedNv ?? null,
+    p_tuan_bat_dau: start,
+    p_tuan_ket_thuc: end,
+  });
 
-  if (lapDonError) {
+  if (dashError) {
     return (
       <Card>
-        <p className="text-sm text-red-700">Lỗi tải dữ liệu cảnh báo: {lapDonError.message}</p>
+        <p className="text-sm text-red-700">Lỗi tải dữ liệu cảnh báo: {dashError.message}</p>
       </Card>
     );
   }
 
-  const thangDanhGiaMoiNhatSo = Math.max(0, ...lapDonData.map((r) => parseThangDanhGia(r.thang_danh_gia)));
-  const thangDanhGiaMoiNhat = thangDanhGiaMoiNhatSo
-    ? `T${thangDanhGiaMoiNhatSo % 100}/${Math.floor(thangDanhGiaMoiNhatSo / 100)}`
-    : null;
+  const dash = (dashData ?? null) as TheoDoiDashboard | null;
+  const thangDanhGiaMoiNhat = dash?.thang_danh_gia_moi_nhat ?? null;
 
-  const lapDonMoiNhat = lapDonData.filter((r) => parseThangDanhGia(r.thang_danh_gia) === thangDanhGiaMoiNhatSo);
-
-  const daCoTrongLapDon = new Set(lapDonMoiNhat.map((r) => `${r.ma_khach}|${r.ma_san_pham}`));
-
-  let danhSach: CanhBaoItem[] = lapDonMoiNhat
-    .filter((r) => r.ma_san_pham && r.ma_nhan_vien && (r.muc_do_canh_bao === "Khẩn" || r.muc_do_canh_bao === "Ưu tiên" || r.muc_do_canh_bao === "Mồ côi"))
-    .map((r) => ({
-      maKhach: r.ma_khach,
-      tenKhach: r.ten_khach,
-      maNhanVien: r.ma_nhan_vien as string,
-      tenNhanVien: r.ten_nhan_vien,
-      maSanPham: r.ma_san_pham as string,
-      tenSanPham: r.ten_san_pham,
-      mucDo: r.muc_do_canh_bao as MucDoCanhBao,
-      donGanNhat: r.don_gan_nhat,
-    }));
-
-  if (thangDanhGiaMoiNhatSo) {
-    const nam = Math.floor(thangDanhGiaMoiNhatSo / 100);
-    const thang = thangDanhGiaMoiNhatSo % 100;
-    const sapDenHan = await tinhSapDenHan(supabase, { nam, thang }, daCoTrongLapDon);
-    danhSach = [...danhSach, ...sapDenHan];
-  }
-
-  // Loc theo bo loc SS/NV dang chon tren trang (dung chung voi danh sach chinh).
-  if (selectedSs) {
-    danhSach = danhSach.filter((r) => ssByCode.get(normCode(r.maNhanVien)) === selectedSs);
-  }
-  if (selectedNv) {
-    danhSach = danhSach.filter((r) => normCode(r.maNhanVien) === selectedNv);
-  }
+  const danhSach: CanhBaoItem[] = (dash?.items ?? []).map((r) => ({
+    maKhach: r.ma_khach,
+    tenKhach: r.ten_khach,
+    maNhanVien: r.ma_nhan_vien,
+    tenNhanVien: r.ten_nhan_vien,
+    maSanPham: r.ma_san_pham,
+    tenSanPham: r.ten_san_pham,
+    mucDo: r.muc_do,
+    donGanNhat: r.don_gan_nhat,
+    planNv: r.plan_nv,
+    planGiaoBoi: r.plan_giao_boi,
+    daLenKeHoach: r.da_len_ke_hoach,
+    daViengTham: r.da_vieng_tham,
+    maSsPhuTrach: r.ma_ss_phu_trach,
+  }));
 
   if (danhSach.length === 0) {
     return (
@@ -281,58 +160,13 @@ export default async function TheoDoiSection({
     );
   }
 
-  const maKhachList = Array.from(new Set(danhSach.map((r) => r.maKhach)));
-  const { start, end } = weekBoundsTheoDoi();
-
-  const [planRes, checkinRes, khachSsRes] = await Promise.all([
-    maKhachList.length > 0
-      ? supabase
-          .from("khach_hang_theo_doi_ke_hoach")
-          .select("ma_khach,ma_san_pham,muc_do_canh_bao,trang_thai,giao_boi,ma_nhan_vien")
-          .eq("tuan_bat_dau", start)
-          .in("ma_khach", maKhachList)
-      : Promise.resolve({ data: [] as PlanRow[] }),
-    maKhachList.length > 0
-      ? fetchAllRows<CheckinRow>((from, to) =>
-          supabase
-            .from("Du lieu cham cong thang hien tai")
-            .select("ma_khach")
-            .in("ma_khach", maKhachList)
-            .gte("thoi_gian_checkin", `${start}T00:00:00`)
-            .lte("thoi_gian_checkin", `${end}T23:59:59`)
-            .range(from, to),
-        )
-      : Promise.resolve({ data: [] as CheckinRow[], error: null }),
-    // SS phu trach TUNG KHACH (co the KHAC voi ss cua NV goc neu NV goc da bi
-    // xoa khoi "Danh sach nhan vien") - dung lam phuong an du phong de van xac
-    // dinh duoc nhom SS can hien trong dropdown "Giao cho NV".
-    maKhachList.length > 0
-      ? supabase.from("khach_hang_master").select("ma_khach,ma_ss_phu_trach").in("ma_khach", maKhachList)
-      : Promise.resolve({ data: [] as { ma_khach: string; ma_ss_phu_trach: string | null }[] }),
-  ]);
-
-  const planByKey = new Map<string, PlanRow>();
-  for (const p of (planRes.data ?? []) as PlanRow[]) {
-    planByKey.set(`${p.ma_khach}|${p.ma_san_pham ?? ""}`, p);
-  }
-  const daViengTuanNay = new Set(
-    ((checkinRes as { data: CheckinRow[] | null }).data ?? []).map((c) => c.ma_khach).filter((v): v is string => !!v),
-  );
-  const maSsPhuTrachByMaKhach = new Map<string, string | null>();
-  for (const k of (khachSsRes.data ?? []) as { ma_khach: string; ma_ss_phu_trach: string | null }[]) {
-    maSsPhuTrachByMaKhach.set(k.ma_khach, k.ma_ss_phu_trach);
-  }
-
   // Muc "Da hoan thanh tuan nay" (da tick + da viengly tham) mac dinh an theo
   // yeu cau: chi giu hien nhung muc CHUA dua vao lich HOAC da dua vao nhung
   // chua duoc viengly tham.
   const canXuLy: CanhBaoItem[] = [];
   const daHoanThanh: CanhBaoItem[] = [];
   for (const item of danhSach) {
-    const plan = planByKey.get(`${item.maKhach}|${item.maSanPham}`);
-    const daTick = !!plan;
-    const daVieng = daViengTuanNay.has(item.maKhach);
-    if (daTick && daVieng) {
+    if (item.daLenKeHoach && item.daViengTham) {
       daHoanThanh.push(item);
     } else {
       canXuLy.push(item);
@@ -399,7 +233,6 @@ export default async function TheoDoiSection({
             </div>
             <div className="space-y-2">
               {g.items.map((item) => {
-                const plan = planByKey.get(`${item.maKhach}|${item.maSanPham}`);
                 const laChinhMinh = normCode(maNhanVienHienTai) === normCode(item.maNhanVien);
                 // NV xem dong cua chinh minh -> tu tick. SS/ASM xem dong cua NV
                 // duoi quyen (da qua RLS scoped, chac chan la nguoi minh quan
@@ -414,7 +247,7 @@ export default async function TheoDoiSection({
                 // neu SS/ASM da giao lai cho 1 NV khac truoc do) - dung lam
                 // gia tri chon san trong dropdown va de "Bo giao" xoa dung
                 // dong hien co, khong con phu thuoc vao NV goc phu trach.
-                const nvDaGiao = plan?.ma_nhan_vien ?? item.maNhanVien;
+                const nvDaGiao = item.planNv ?? item.maNhanVien;
                 const tenNvDaGiao =
                   normCode(nvDaGiao) === normCode(item.maNhanVien)
                     ? item.tenNhanVien
@@ -427,7 +260,7 @@ export default async function TheoDoiSection({
                 // roi quy doi ma SS -> ten SS de tra dung nhom trong nvTheoSs.
                 const tenSsCuaNvGoc =
                   ssByCode.get(normCode(item.maNhanVien)) ??
-                  tenSsTheoMa.get(normCode(maSsPhuTrachByMaKhach.get(item.maKhach) ?? "")) ??
+                  tenSsTheoMa.get(normCode(item.maSsPhuTrach ?? "")) ??
                   "";
                 const dongNghiepCungSs = nvTheoSs.get(tenSsCuaNvGoc) ?? [];
                 // Luon giu NV goc trong danh sach chon (du co the da nghi
@@ -483,9 +316,9 @@ export default async function TheoDoiSection({
                       nvDaGiao={nvDaGiao}
                       tenNvDaGiao={tenNvDaGiao}
                       danhSachNv={danhSachNvCungSs}
-                      daLenKeHoach={!!plan}
-                      daViengTham={daViengTuanNay.has(item.maKhach)}
-                      giaoBoi={plan?.giao_boi ?? null}
+                      daLenKeHoach={item.daLenKeHoach}
+                      daViengTham={item.daViengTham}
+                      giaoBoi={item.planGiaoBoi}
                       chePDo={chePDo}
                     />
                   </div>

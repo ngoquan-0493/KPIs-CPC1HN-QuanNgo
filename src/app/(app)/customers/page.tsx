@@ -10,6 +10,7 @@ import CustomersTabs from "@/components/customers-tabs";
 import TheoDoiSection from "./theo-doi-section";
 import { Card, PageHeader, Badge, EmptyState, StatCard } from "@/components/ui";
 import { IconUsers, IconAlert, IconClock } from "@/components/icons";
+import { Suspense } from "react";
 
 type EmployeeRow = { ma_nhan_vien: string; ten_nhan_vien: string | null; ss: string | null };
 
@@ -96,6 +97,28 @@ function renderDelta(thangNay: number, thangTruoc: number) {
 
 const MAX_HIEN_THI = 200;
 
+// Skeleton rieng cho tab "Khach hang can theo doi" - hien NGAY khi bam doi
+// tab (Suspense boundary quanh TheoDoiSection ben duoi), vi loading.tsx cap
+// route KHONG tu kich hoat khi chi doi searchParams tren CUNG 1 trang (gioi
+// han cua Next.js App Router) - xem ghi chu trong customers-tabs.tsx.
+function TheoDoiSkeleton() {
+  return (
+    <div>
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-24 animate-pulse rounded-2xl border border-slate-200/80 bg-white" />
+        ))}
+      </div>
+      <div className="mb-4 h-5 w-64 animate-pulse rounded-md bg-slate-100" />
+      <div className="space-y-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-20 animate-pulse rounded-2xl border border-slate-200/80 bg-white" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default async function CustomersPage({
   searchParams,
 }: {
@@ -159,20 +182,28 @@ export default async function CustomersPage({
     ? (ssEmployees.find((e) => e.name === selectedSs)?.code ?? selectedSs)
     : null;
 
-  const dashRes = await supabase.rpc("get_customers_dashboard", {
-    p_da_loc: daLoc,
-    p_q: q || null,
-    p_ss: selectedSsCode,
-    p_nv: selectedNv ?? null,
-    p_nam: nam,
-    p_thang: thang,
-    p_prev_nam: prevNam,
-    p_prev_thang: prevThang,
-    p_limit: MAX_HIEN_THI,
-  });
+  // 2026-09-27: Chi goi RPC dashboard cua tab "Danh sach khach hang" khi
+  // dang xem DUNG tab do - truoc day goi VO DIEU KIEN ca khi dang xem tab
+  // "Khach hang can theo doi" (dashRes khong dung toi trong nhanh JSX cua
+  // tab do), gay them 1 vong round-trip + 3 lan count(*) toan bang thua
+  // (stats.tong_khach/qua_han/chua_phu_trach) moi lan chuyen sang tab theo doi.
+  const dashRes =
+    tab === "theo-doi"
+      ? null
+      : await supabase.rpc("get_customers_dashboard", {
+          p_da_loc: daLoc,
+          p_q: q || null,
+          p_ss: selectedSsCode,
+          p_nv: selectedNv ?? null,
+          p_nam: nam,
+          p_thang: thang,
+          p_prev_nam: prevNam,
+          p_prev_thang: prevThang,
+          p_limit: MAX_HIEN_THI,
+        });
 
-  const error = dashRes.error;
-  const dash = (dashRes.data ?? null) as CustomersDashboard | null;
+  const error = dashRes?.error;
+  const dash = (dashRes?.data ?? null) as CustomersDashboard | null;
   const khachRows = dash?.rows ?? [];
   const tongSoKhopBoLoc = dash?.total_matched ?? 0;
 
@@ -201,15 +232,17 @@ export default async function CustomersPage({
       <CustomersTabs />
 
       {tab === "theo-doi" ? (
-        <TheoDoiSection
-          selectedSs={selectedSs}
-          selectedNv={selectedNv}
-          ssByCode={ssByCode}
-          employees={employees}
-          ssEmployees={ssEmployees}
-          viTriHienTai={currentEmployee?.["Vị trí"] ?? null}
-          maNhanVienHienTai={currentEmployee?.["Mã nhân viên"] ?? null}
-        />
+        <Suspense fallback={<TheoDoiSkeleton />}>
+          <TheoDoiSection
+            selectedSs={selectedSs}
+            selectedNv={selectedNv}
+            ssByCode={ssByCode}
+            employees={employees}
+            ssEmployees={ssEmployees}
+            viTriHienTai={currentEmployee?.["Vị trí"] ?? null}
+            maNhanVienHienTai={currentEmployee?.["Mã nhân viên"] ?? null}
+          />
+        </Suspense>
       ) : (
         <>
       {error && (
