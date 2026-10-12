@@ -1,4 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
+import { getCurrentEmployee } from "@/lib/current-employee";
+import ProductsTabs from "@/components/products-tabs";
+import MucTieuQuySection from "./muc-tieu-section";
 import ProductSelector from "@/components/product-selector";
 import SsFilter from "@/components/ss-filter";
 import NvFilter from "@/components/nv-filter";
@@ -93,9 +96,17 @@ function monthLabelOf(y: number, m0: number) {
 export default async function ProductsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ sp?: string; ss?: string; nv?: string }>;
+  searchParams: Promise<{ sp?: string; ss?: string; nv?: string; tab?: string; nam?: string; quy?: string }>;
 }) {
   const sp = await searchParams;
+
+  // Tab "Muc tieu quy" (mac dinh) chi danh cho ASM/SS; NVKD van vao thang trang phan tich san pham cu.
+  const employee = await getCurrentEmployee();
+  const viTri = employee?.["Vị trí"];
+  const coMucTieu = viTri === "ASM" || viTri === "SS";
+  if (employee && coMucTieu && (sp.tab ?? "muc-tieu") === "muc-tieu") {
+    return <MucTieuQuySection sp={sp} employee={employee} />;
+  }
   const selectedSs = sp.ss;
   const selectedNv = sp.nv;
 
@@ -296,6 +307,8 @@ export default async function ProductsPage({
           </>
         }
       />
+
+      {coMucTieu && <ProductsTabs />}
 
       {error && (
         <p className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">Lỗi tải dữ liệu: {error.message}</p>
